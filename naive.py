@@ -13,7 +13,6 @@ from typing import Dict
 import pandas as pd
 import pickle as cp
 import dask.dataframe as dd
-# from democafa.utils.dask_write import write_dask_dataframe_to_gzipped_tsv
 from Bio import SeqIO
 import argparse   
 
@@ -79,6 +78,7 @@ def naive_predict(annotations: sparse.csr_matrix, query_file: str, indices: str,
     scores_df.columns = terms
     melted_df = scores_df.reset_index().melt(id_vars = 'index',var_name = 'term', value_name = 'value')
     melted_df = melted_df.rename(columns ={'index':'EntryID'})
+    melted_df = melted_df[melted_df['value'] > 0] 
     print(melted_df.head())
     
     # Create Dask DataFrame

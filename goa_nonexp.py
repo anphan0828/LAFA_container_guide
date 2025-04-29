@@ -5,9 +5,8 @@ Makes predictions based on the non-experimental GO terms that the protein has
 
 """
 
-from datacollection.retrieve_terms import wrapper_retrieve_terms
-from config import GO_CODES, RAW_FILE_PATHS
-from utils.dask_write import write_dask_dataframe_to_gzipped_tsv
+from democafa.datacollection.retrieve_terms import wrapper_retrieve_terms
+from democafa.config import GO_CODES, RAW_FILE_PATHS
 import sys
 import os
 import argparse

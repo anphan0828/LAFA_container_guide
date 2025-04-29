@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 """
-BLAST-based predictor implementation for CAFA2 evaluation.
-Makes predictions based on BLAST sequence similarity.
+Embedding-based predictor implementation.
+Makes predictions based on ProtT5 embedding similarity.
 
-This is a direct port of the MATLAB pfp_blast.m function.
 """
 
 import sys
@@ -17,45 +16,42 @@ import dask.dataframe as dd
 import argparse
 
 
-def calculate_rscore(evalue: float, max_rscore: float = 500.0) -> float:
-    """
-    Calculate R-score from BLAST E-value.
-    R-score = -log(E-value) + 2, capped at max_rscore
+# def calculate_rscore(evalue: float, max_rscore: float = 500.0) -> float:
+#     """
+#     Calculate R-score from BLAST E-value.
+#     R-score = -log(E-value) + 2, capped at max_rscore
     
-    Args:
-        evalue: BLAST E-value
-        max_rscore: Maximum allowed R-score (default: 500)
+#     Args:
+#         evalue: BLAST E-value
+#         max_rscore: Maximum allowed R-score (default: 500)
         
-    Returns:
-        R-score value
-    """
-    if evalue == 0:
-        return max_rscore
-    rscore = -np.log10(evalue) + 2
-    return min(rscore, max_rscore)
+#     Returns:
+#         R-score value
+#     """
+#     if evalue == 0:
+#         return max_rscore
+#     rscore = -np.log10(evalue) + 2
+#     return min(rscore, max_rscore)
 
 
-def blast_predict(annotations: sparse.csr_matrix,
+def prott5_predict(annotations: sparse.csr_matrix,
                   query_file: str, 
                   indices: str,
-                  blast_results: pd.DataFrame,
+                  prott5_results: pd.DataFrame,
                   output_baseline: str,
-                  keep_self_hits: bool = False,
-                  use_rscore: bool = False) -> pd.DataFrame:
+                  keep_self_hits: bool = False) -> pd.DataFrame:
     """
-    Make predictions for query sequences based on BLAST hits.
+    Make predictions for query sequences based on ProtT5 embedding similarity hits.
     
     Args:
         query_file: Path to list of query sequence IDs (.fasta or .txt)
-        blast_results: Path to BLAST results file
+        prott5_results: Path to ProtT5 results file
         annotations: Training annotations sparse matrix (n_sequences x n_terms)
         indices: Path to the term & protein indices file
-        use_rscore: Whether to use R-score (True) or sequence identity (False)
-                   for weighting hits
         keep_self_hits: Whether to keep self-hits (True) or remove them (False)
-                    
+                   
     Note:
-        For each query sequence, finds BLAST hits in training data,
+        For each query sequence, finds ProtT5 hits in training data,
         weights their annotations by sequence similarity, and takes
         the maximum score per term across all hits.
     """
@@ -65,7 +61,7 @@ def blast_predict(annotations: sparse.csr_matrix,
     with open(indices, 'rb') as f:
         proteins, terms = cp.load(f)
     
-    # For BLAST baseline predictor, use both proteins and terms indices     
+    # For ProtT5 baseline predictor, use both proteins and terms indices     
     query_ids = []
     if query_file.endswith('.fasta'):
         print("Reading query IDs from FASTA file")
@@ -81,29 +77,28 @@ def blast_predict(annotations: sparse.csr_matrix,
         print("Please provide a fasta file or a text file with query IDs")
         sys.exit(1)
     
+    
     n_queries = len(query_ids)
     n_terms = len(terms)
     scores = sparse.lil_matrix((n_queries, n_terms), dtype=np.float32)
     
-    # Load BLAST results
-    blast_df = pd.read_csv(blast_results, sep='\t', header=None, 
-                           names=['qseqid', 'sseqid', 'evalue', 'length', 'pident', 'nident'])
+    # Load prott5 results
+    prott5_df = pd.read_csv(prott5_results, sep='\t', header=0, 
+                           names=['qseqid', 'sseqid', 'evalue', 'length', 'similarity', 'nident'])
     
-    
-    
-    # Remove self-hits, qseqid is from test set, sseqid is from training set (blast db)
-    blast_df['qseqid_acc'] = blast_df['qseqid'].apply(lambda x: x.split('|')[1] if "|" in x else x)
-    blast_df['sseqid_acc'] = blast_df['sseqid'].apply(lambda x: x.split('|')[1] if "|" in x else x)
+    # Remove self-hits
+    prott5_df['qseqid_acc'] = prott5_df['qseqid'].apply(lambda x: x.split('|')[1] if "|" in x else x)
+    prott5_df['sseqid_acc'] = prott5_df['sseqid'].apply(lambda x: x.split('|')[1] if "|" in x else x)
     if not keep_self_hits:
-        blast_df = blast_df[blast_df['sseqid_acc'] != blast_df['qseqid_acc']]
+        prott5_df = prott5_df[prott5_df['sseqid_acc'] != prott5_df['qseqid']]
     
-    proteins_with_hits = set(blast_df['qseqid_acc'])
+    proteins_with_hits = set(prott5_df['qseqid_acc'])
     # Process each query sequence
     for i, qid in enumerate(query_ids):
         if qid not in proteins_with_hits:
             continue
             
-        hits = blast_df[blast_df['qseqid_acc'] == qid]
+        hits = prott5_df[prott5_df['qseqid_acc'] == qid]
         hits = hits.sort_values('evalue', ascending=True)
         hits_unique = hits.drop_duplicates('sseqid_acc', keep='first').reset_index(drop=True) # keep only the first hit for each sseqid_acc result (lowest evalue)
         # hit_sseqids = set(hits['sseqid_acc'].unique())
@@ -111,22 +106,22 @@ def blast_predict(annotations: sparse.csr_matrix,
         # Calculate weights for hits, make sure the order is retained
         weights = {}
         for _, hit in hits_unique.iterrows():
-            if use_rscore:
-                weights[hit['sseqid_acc']] = calculate_rscore(hit['evalue'])
-            else:
-                weights[hit['sseqid_acc']] = hit['pident']/100.0
+            # if use_rscore:
+            #     weights[hit['qseqid']] = calculate_rscore(hit['evalue'])
+            # else:
+            weights[hit['sseqid_acc']] = hit['similarity']/100.0
             
         # Get annotations for hit sequences and weight them
-        query_scores = sparse.lil_matrix((len(weights), n_terms), dtype=np.float32) # matrix of shape (n_sseqid, n_terms)
+        query_scores = sparse.lil_matrix((len(weights), n_terms), dtype=np.float32)
         for num_hit_seq, (hit_seq, weight) in enumerate(weights.items()):
             # check if sseqid has annotations
             if hit_seq in proteins:
-                hit_annots = annotation_mat[proteins[hit_seq]].multiply(weight) # assign same weight (pident) to all terms from this hit
+                hit_annots = annotation_mat[proteins[hit_seq]].multiply(weight) # assign same weight (similarity) to all terms from this hit
                 query_scores[num_hit_seq] = hit_annots
         query_scores = query_scores.tocsr()
         max_scores = query_scores.max(axis=0)
                 
-        assert len(np.unique(max_scores.data)) <= len(weights), f"More unique similarity values than number of hit sequences"
+        assert len(np.unique(max_scores.data)) <= len(weights), f"More unique similarity values than number of hit sequences"                
         scores[i] = max_scores
         
     # Add row and column indices
@@ -146,15 +141,15 @@ def blast_predict(annotations: sparse.csr_matrix,
 
     
 def parse_args(argv):
-    parser = argparse.ArgumentParser(description='BLAST sequence similarity baseline')
+    parser = argparse.ArgumentParser(description='ProtT5 embeddings baseline')
     parser.add_argument('--annot_matrix', '-a', 
                         help='Path to the propagated annotation sparse matrix', required=True)
     parser.add_argument('--indices', '-i', 
                         help='Path to the term & protein indices file', required=True)
     parser.add_argument('--query_file', '-q', 
                         help='FASTA file or text file containing query IDs', required=True)
-    parser.add_argument('--blast_results', '-b',
-                        help='Path to the BLAST results file', required=True)
+    parser.add_argument('--prott5_results', '-p',
+                        help='Path to the ProtT5 embedding results file', required=True)
     parser.add_argument('--output_baseline', '-o', 
                         help='Path to the output file', required=True)
     return parser.parse_args(argv)    
@@ -162,11 +157,11 @@ def parse_args(argv):
 
 def main():
     args = parse_args(sys.argv[1:])
-    blast_predict(
+    prott5_predict(
         annotations=args.annot_matrix,
         query_file=args.query_file,
         indices=args.indices,
-        blast_results=args.blast_results,
+        prott5_results=args.prott5_results,
         output_baseline=args.output_baseline
     )
     
