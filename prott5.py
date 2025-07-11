@@ -5,6 +5,7 @@ Makes predictions based on ProtT5 embedding similarity.
 
 """
 
+import os
 import sys
 import numpy as np
 import pandas as pd
@@ -14,7 +15,9 @@ from Bio import SeqIO
 from typing import Dict
 import dask.dataframe as dd
 import argparse
-
+from democafa.datacollection.retrieve_terms import wrapper_retrieve_terms
+from democafa.utils.ontology import sparse_matrix_and_indices
+from democafa.config import GO_CODES
 
 # def calculate_rscore(evalue: float, max_rscore: float = 500.0) -> float:
 #     """
@@ -34,9 +37,10 @@ import argparse
 #     return min(rscore, max_rscore)
 
 
-def prott5_predict(annotations: sparse.csr_matrix,
+def prott5_predict(annotations,
                   query_file: str, 
-                  indices: str,
+                  indices,
+                  graph, add_graph,
                   prott5_results: pd.DataFrame,
                   output_baseline: str,
                   keep_self_hits: bool = False) -> pd.DataFrame:
@@ -56,10 +60,30 @@ def prott5_predict(annotations: sparse.csr_matrix,
         the maximum score per term across all hits.
     """
     # Load annotation matrix
-    annotation_mat = sparse.load_npz(annotations)
-    # Load protein and term indices
-    with open(indices, 'rb') as f:
-        proteins, terms = cp.load(f)
+    if '.gaf' in annotations or '.dat' in annotations:
+        if not graph:
+            print("Please provide a graph file for GAF or DAT input")
+            sys.exit(1)
+        print("Loading annotations from GAF or DAT file")
+        wrapper_retrieve_terms(
+        annot_file=annotations,
+        filetype='dat' if '.dat' in annotations else 'gaf',
+        go_codes=GO_CODES,
+        selected_go_codes='Experimental,IC,TAS', # only use non-experimental terms
+        graph=graph,
+        add_graph=add_graph, # maybe don't need to filter comparable with t-1
+        output_tsv=f'{os.path.dirname(output_baseline)}/nonexp_terms.tsv' # just a temporary file
+        )
+        terms_df = pd.read_csv(f'{os.path.dirname(output_baseline)}/nonexp_terms.tsv', sep='\t', header=0, names=['EntryID', 'term', 'aspect'])
+        annotation_mat, proteins, terms, _ = sparse_matrix_and_indices(terms_df)
+        os.remove(f'{os.path.dirname(output_baseline)}/nonexp_terms.tsv')
+    elif annotations.endswith('.npz'):
+        if not indices:
+            print("Please provide a term indices file for matrix input")
+            sys.exit(1)
+        annotation_mat = sparse.load_npz(annotations)
+        with open(indices, 'rb') as f:
+            proteins, terms = cp.load(f)
     
     # For ProtT5 baseline predictor, use both proteins and terms indices     
     query_ids = []
@@ -90,7 +114,7 @@ def prott5_predict(annotations: sparse.csr_matrix,
     prott5_df['qseqid_acc'] = prott5_df['qseqid'].apply(lambda x: x.split('|')[1] if "|" in x else x)
     prott5_df['sseqid_acc'] = prott5_df['sseqid'].apply(lambda x: x.split('|')[1] if "|" in x else x)
     if not keep_self_hits:
-        prott5_df = prott5_df[prott5_df['sseqid_acc'] != prott5_df['qseqid']]
+        prott5_df = prott5_df[prott5_df['sseqid_acc'] != prott5_df['qseqid_acc']]
     
     proteins_with_hits = set(prott5_df['qseqid_acc'])
     # Process each query sequence
@@ -142,10 +166,12 @@ def prott5_predict(annotations: sparse.csr_matrix,
     
 def parse_args(argv):
     parser = argparse.ArgumentParser(description='ProtT5 embeddings baseline')
-    parser.add_argument('--annot_matrix', '-a', 
-                        help='Path to the propagated annotation sparse matrix', required=True)
+    parser.add_argument('--annotations', '-a', 
+                        help='Path to the propagated annotation sparse matrix or a .gaf or .dat file', required=True)
     parser.add_argument('--indices', '-i', 
-                        help='Path to the term & protein indices file', required=True)
+                        help='Path to the term & protein indices file', required=False, default=None)
+    parser.add_argument('--graph', help='Path to OBO file for GO graph', required=False, default=None)
+    parser.add_argument('--add_graph',help='Path to additional OBO file for GO graph at a later time point', required=False, default=None)                    
     parser.add_argument('--query_file', '-q', 
                         help='FASTA file or text file containing query IDs', required=True)
     parser.add_argument('--prott5_results', '-p',
@@ -158,9 +184,11 @@ def parse_args(argv):
 def main():
     args = parse_args(sys.argv[1:])
     prott5_predict(
-        annotations=args.annot_matrix,
+        annotations=args.annotations,
         query_file=args.query_file,
         indices=args.indices,
+        graph=args.graph,
+        add_graph=args.add_graph,
         prott5_results=args.prott5_results,
         output_baseline=args.output_baseline
     )
