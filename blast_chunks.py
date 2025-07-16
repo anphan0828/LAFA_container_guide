@@ -82,36 +82,35 @@ def process_query_chunk(task_data):
     return results
 
 
-def blast_predict(annotations, query_file, indices, graph, add_graph,
+def blast_predict(annot_file, query_file, indices, graph, add_graph,
                  blast_results, output_baseline, keep_self_hits=False, use_rscore=False):
     """Make predictions for query sequences based on BLAST hits."""
     # Load annotation matrix from appropriate source
-    if '.gaf' in annotations or '.dat' in annotations:
+    if '.gaf' in annot_file or '.dat' in annot_file:
         if not graph:
             print("Please provide a graph file for GAF or DAT input")
             sys.exit(1)
         print("Loading annotations from GAF or DAT file")
         wrapper_retrieve_terms(
-            annot_file=annotations,
-            filetype='dat' if '.dat' in annotations else 'gaf',
+            annot_file=annot_file,
             go_codes=GO_CODES,
-            selected_go_codes='Experimental,IC,TAS',
+            selected_go_codes='Experimental,IC,TAS', # only use non-experimental terms
             graph=graph,
-            add_graph=add_graph,
-            output_tsv=f'{os.path.dirname(output_baseline)}/nonexp_terms.tsv'
+            # add_graph=add_graph, # maybe don't need to filter comparable with t-1
+            output_tsv=f'{os.path.dirname(output_baseline)}/naive_terms.tsv' # just a temporary file
         )
         terms_df = pd.read_csv(
-            f'{os.path.dirname(output_baseline)}/nonexp_terms.tsv', 
+            f'{os.path.dirname(output_baseline)}/blast_terms.tsv', 
             sep='\t', header=0, 
             names=['EntryID', 'term', 'aspect']
         )
         annotation_mat, proteins, terms, _ = sparse_matrix_and_indices(terms_df)
-        os.remove(f'{os.path.dirname(output_baseline)}/nonexp_terms.tsv')
-    elif annotations.endswith('.npz'):
+        os.remove(f'{os.path.dirname(output_baseline)}/blast_terms.tsv')
+    elif annot_file.endswith('.npz'):
         if not indices:
             print("Please provide a term indices file for matrix input")
             sys.exit(1)
-        annotation_mat = sparse.load_npz(annotations)
+        annotation_mat = sparse.load_npz(annot_file)
         with open(indices, 'rb') as f:
             proteins, terms = cp.load(f)
     
@@ -225,7 +224,7 @@ def blast_predict(annotations, query_file, indices, graph, add_graph,
 
 def parse_args(argv):
     parser = argparse.ArgumentParser(description='BLAST sequence similarity baseline')
-    parser.add_argument('--annotations', '-a', 
+    parser.add_argument('--annot_file', '-a', 
                         help='Path to the propagated annotation sparse matrix or a .gaf or .dat file', required=True)
     parser.add_argument('--indices', '-i', 
                         help='Path to the term & protein indices file', required=False, default=None)
@@ -248,7 +247,7 @@ def parse_args(argv):
 def main():
     args = parse_args(sys.argv[1:])
     blast_predict(
-        annotations=args.annotations,
+        annot_file=args.annot_file,
         query_file=args.query_file,
         indices=args.indices,
         graph=args.graph,
