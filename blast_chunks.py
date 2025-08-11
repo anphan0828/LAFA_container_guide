@@ -93,11 +93,10 @@ def blast_predict(annot_file, query_file, indices, graph, add_graph,
         print("Loading annotations from GAF or DAT file")
         wrapper_retrieve_terms(
             annot_file=annot_file,
-            go_codes=GO_CODES,
             selected_go_codes='Experimental,IC,TAS', # only use non-experimental terms
             graph=graph,
             # add_graph=add_graph, # maybe don't need to filter comparable with t-1
-            output_tsv=f'{os.path.dirname(output_baseline)}/naive_terms.tsv' # just a temporary file
+            output_tsv=f'{os.path.dirname(output_baseline)}/blast_terms.tsv' # just a temporary file
         )
         terms_df = pd.read_csv(
             f'{os.path.dirname(output_baseline)}/blast_terms.tsv', 
