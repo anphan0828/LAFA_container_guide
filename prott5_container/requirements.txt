@@ -1,0 +1,15 @@
+Bio==1.8.0
+biopython==1.85
+networkx==3.4.2
+numpy==1.26.4
+obonet==1.1.0
+pandas==2.2.3
+scipy==1.15.3
+PyYAML==6.0.2
+tqdm==4.66.1
+torch>=2.0.0
+transformers>=4.21.0
+h5py>=3.7.0
+scikit-learn>=1.1.0
+joblib>=1.2.0
+sentencepiece>=0.1.96
