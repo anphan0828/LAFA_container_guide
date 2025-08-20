@@ -14,7 +14,6 @@ import os
 import sys
 import argparse
 import subprocess
-import tempfile
 from pathlib import Path
 
 def run_prott5_analysis(query_file, train_sequences, prott5_results, model_dir=None, num_threads=8):

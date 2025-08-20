@@ -2,6 +2,10 @@
 
 This guide explains how to dockerize a protein function prediction method to participate in LAFA: Longitudinal Assessment of Functional Annotation. A protein function prediction method on LAFA predicts Gene Ontology (GO) terms for provided protein IDs and protein sequences, similar to CAFA competition. The prediction task will be repeated every time there is a new ground truth (released every two months by UniProt).
 
+**Docker Basics**: Docker container is a way to package your entire application (code, dependencies, environment) into a portable container that runs consistently anywhere. This ensures your method can run seamlessly on LAFA's infrastructure.
+
+We'll use our **ProtT5 container** (`prott5_container/` in this repository) as a concrete example throughout this guide to illustrate best practices.
+
 ## Container Requirements
 
 ### 1. Input Requirements
@@ -29,19 +33,20 @@ The file can be optionally gzipped for space efficiency.
 ## Directory Structure
 
 ```
-method_container/
-├── Dockerfile
-├── requirements.txt
-├── method_main.py          # Main entry point script
-├── config.yaml           # Configuration file
-├── [method_specific_files]
-└── README.md   # Includes command to run container
+method_container/                    # ProtT5 example: prott5_container/
+├── Dockerfile                       # Container definition
+├── requirements.txt                 # Python dependencies
+├── method_main.py                   # Main entry script (prott5_main.py)
+├── config.yaml                      # Configuration file
+├── [method_specific_files]          # e.g., prott5_embedder.py, run_prott5.sh
+└── README.md                        # Usage instructions
 ```
 
 ## Dockerfile Template
 
 ```dockerfile
 FROM python:3.10  # Adjust base image as needed
+                  # ProtT5 uses: nvidia/cuda:11.8.0-cudnn8-devel-ubuntu22.04 for GPU support
 
 # Install system dependencies
 RUN apt-get update && apt-get install -y \
@@ -51,44 +56,59 @@ RUN apt-get update && apt-get install -y \
     wget \
     && rm -rf /var/lib/apt/lists/*
 
+# Set working directory as /app inside the container
 WORKDIR /app
 
-# Set cache/model directories (if needed)
-# ENV MODEL_CACHE=/app/.cache/models
-# RUN mkdir -p /app/.cache/models
+# (if applicable) Set cache/model directories 
+# ProtT5 example sets HuggingFace cache directories:
+# ENV HF_HOME=/app/.cache/huggingface
+# ENV TRANSFORMERS_CACHE=/app/.cache/huggingface
+# RUN mkdir -p /app/.cache/huggingface
 
 # Install Python dependencies
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Pre-download models during build (if applicable)
-# RUN python3 -c "import your_model_library; your_model_library.download_model()"
+# (if applicable) Pre-download models during build 
+# ProtT5 pre-downloads the transformer model to avoid download delays during runtime:
+# RUN python3 -c "from transformers import T5EncoderModel, T5Tokenizer; \
+#     T5Tokenizer.from_pretrained('Rostlab/prot_t5_xl_half_uniref50-enc'); \
+#     T5EncoderModel.from_pretrained('Rostlab/prot_t5_xl_half_uniref50-enc')"
 
 # Copy application files
 COPY method_main.py .
 COPY [other_files] .
 
-# Make scripts executable (if using bash scripts)
+# (if applicable) Make bash scripts executable 
 # RUN chmod +x run_method.sh
+# ProtT5 example: RUN chmod +x run_prott5.sh
 
-# Set environment variable for thread count (if applicable)
+# (if applicable) Set environment variables 
 # ENV NUM_THREADS=8
 
 # Set entry point - should accept standard arguments
 ENTRYPOINT ["python3", "method_main.py"]
+# ProtT5: ENTRYPOINT ["python3", "prott5_main.py"]
 ```
+
+**Key Docker concepts**:
+- **FROM**: Specifies the base operating system and tools (like Ubuntu + Python)
+- **RUN**: Executes commands during the build process (installing packages, downloading models)
+- **COPY**: Copies files from your computer into the container
+- **ENV**: Sets environment variables that your program can use
+- **ENTRYPOINT**: Defines what command runs when the container starts
 
 ## Entry Point Script (method_main.py)
 
-Your main script should:
+Your main script should handle all the standard arguments and orchestrate your method's workflow. Here's a template based on the **ProtT5 example**:
 
-1. **Parse arguments**: Handle required and optional parameters
-2. **Validate inputs**: Check file existence and formats
-3. **Execute pipeline**: Orchestrate your method's workflow
-4. **Generate output**: Produce standardized 3-column TSV
+The ProtT5 main wrapper script `prott5_main.py`:
+1. **Argument parsing**: Handles both required and optional parameters
+2. **Input validation**: Checks that input files exist before processing
+3. **Pipeline orchestration**: Executes Part 1 (embedding generation) then Part 2 (prediction)
+4. **Error handling**: Provides clear error messages and proper exit codes
 
-Example of `method_main.py`
-
+Recommended template for `method_main.py`:
 ```python
 #!/usr/bin/env python3
 import argparse
@@ -98,19 +118,19 @@ import sys
 def main():
     parser = argparse.ArgumentParser(description='Your method description')
     
-    # Required arguments
+    # Required arguments (standard LAFA interface)
     parser.add_argument('--query_file', '-q', required=True,
-                        help='FASTA file containing query sequences')
+                        help='FASTA file containing query sequences (.fasta)')
     parser.add_argument('--train_sequences', required=True,
-                        help='FASTA file containing training sequences')
+                        help='FASTA file containing training sequences (.fasta)')
     parser.add_argument('--annot_file', '-a', required=True,
-                        help='Annotation file (.gaf/.dat/.npz)')
+                        help='Annotation file (.gaf)')
     parser.add_argument('--graph', required=True,
                         help='GO ontology file (.obo)')
     parser.add_argument('--output_file', '-o', required=True,
                         help='Output predictions file')
     
-    # Optional arguments
+    # Optional arguments (method-specific)
     parser.add_argument('--num_threads', type=int, default=8,
                         help='Number of threads')
     
@@ -135,34 +155,28 @@ if __name__ == '__main__':
 ```
 
 ## Data Mounting
-Data mounting allows the method to bind directories on your computer to the directories inside the container. These directories can be local data folders (during container testing), or LAFA-hosted repositories (when the method is added to LAFA). Note that large data should not be included in the Docker container of your method. If your method needs access to intermediate or external data (e.g., trained model weights, protein embeddings), please contact us.
+
+Data mounting allows your container to access files on your computer (or LAFA's servers) without copying them into the container. This helps reduce the size of the container image (that will be pushed to Dockerhub). Large data should not be included in the Docker container of your method. If your method needs access to intermediate or external data (e.g., trained model weights, protein embeddings), please contact us.
 
 Docker data mount documentation: https://docs.docker.com/engine/storage/bind-mounts/
-### Input Mounts
+
+### ProtT5 Example: Docker Run with Data Mounting
 ```bash
-# Mounting `local_folder/data` directory to the `data/` directory within the container ("ro" stands for readonly)
--v /local_folder/data:/data:ro 
+# ProtT5 container run command
+docker run --rm \
+    -v /path/to/data:/app/data:ro \
+    -v /path/to/output:/app/output:rw \
+    prott5_predictor \
+    --query_file /app/data/test_sequences.fasta \
+    --train_sequences /app/data/train_sequences.fasta \
+    --annot_file /app/data/annotations.gaf.gz \
+    --graph /app/data/go-basic.obo \
+    --output_baseline /app/output/prott5_predictions.tsv.gz
 ```
 
-### Output Mounts
-```bash
-# Mount `local_folder/output` directory to the `output/` directory within the container ("rw" stands for readwrite)
--v /local_folder/output:/output:rw
-```
-
-### Docker Run Example (with data mounting)
-```bash
-docker run \
-    -v /path/to/data:/data:ro \
-    -v /path/to/output:/output:rw \
-    your-method-container \
-    --query_file /data/queries.fasta \
-    --train_sequences /data/training.fasta \
-    --annot_file /data/annotations.gaf \
-    --graph /data/go-basic.obo \
-    --output_file /output/predictions.tsv \
-    --num_threads 16
-```
+**Mount Explanation**:
+- `/path/to/data:/app/data:ro` - Your `path/to/data` folder becomes `/app/data` inside container (read-only)
+- `/path/to/output:/app/output:rw` - Your `path/to/output` folder becomes `/app/output` inside container (read-write)
 
 You can ignore data mounting during testing by skipping the "-v" arguments in the `docker run` command.
 
@@ -171,30 +185,76 @@ You can ignore data mounting during testing by skipping the "-v" arguments in th
 
 You will need Docker to build and test your containers. Steps to [install Docker on Linux](https://docs.docker.com/desktop/setup/install/linux/). If you have problem installing Docker on your local machine, please first create a Dockerfile and generate all necessary scripts, then contact us.
 
+For Linux users: after installation, you might need follow this [guide](https://docs.docker.com/engine/install/linux-postinstall/) to run Docker containers as a non-root user.
+
 ### Building
 ```bash
-docker build -t your-method-container .
+# Navigate to your method directory, then build the container
+cd /path/to/your/method_container/
+docker build -t your-method-container-name .
+
+# ProtT5 example:
+# cd prott5_container/
+# docker build -t prott5_predictor .
 ```
 
+**Build Process**: Docker reads your Dockerfile line by line, downloads dependencies, copies files, and creates a ready-to-run container.
+
 ### Testing
+You can use the files in `test_data` folder to test your containerized method. We recommend testing with data mounting so that your method can work seamlessly once it participates in LAFA.  
+
 ```bash
-# Test with sample data
+# Test with sample data (basic run without data mounting)
+docker run --rm your-method-container \
+    --query_file query_sequences.fasta \
+    --train_sequences db_sequences.fasta \
+    --annot_file goa_uniprot_filtered.gaf.gz \
+    --graph go-basic.obo \
+    --output_file test_predictions.tsv
+
+# Test with data mounting (recommended)
 docker run --rm \
-    -v $(pwd)/test_data:/data:ro \
-    -v $(pwd)/test_output:/output:rw \
+    -v /path/to/test_data:/app/data:ro \
+    -v /path/to/test_output:/app/output:rw \
     your-method-container \
-    --query_file /data/test_queries.fasta \
-    --train_sequences /data/test_training.fasta \
-    --annot_file /data/test_annotations.gaf \
-    --graph /data/go-basic.obo \
-    --output_file /output/test_predictions.tsv
+    --query_file /app/data/query_sequences.fasta \
+    --train_sequences /app/data/db_sequences.fasta \
+    --annot_file /app/data/goa_uniprot_filtered.gaf.gz \
+    --graph /app/data/go-basic.obo \
+    --output_file /app/output/test_predictions.tsv.gz
 ```
+
+**ProtT5 Testing Example**:
+```bash
+# ProtT5 requires GPU support
+docker run --rm \
+    -v /path/to/test_data:/app/data:ro \
+    -v /path/to/test_output:/app/output:rw \
+    prott5_predictor \
+    --query_file /app/data/query_sequences.fasta \
+    --train_sequences /app/data/db_sequences.fasta \
+    --annot_file /app/data/goa_uniprot_filtered.gaf.gz \
+    --graph /app/data/go-basic.obo \
+    --output_baseline /app/output/prott5_predictions.tsv.gz
+```
+
+**Docker Flags Explained**:
+- `--rm`: Automatically remove container when it finishes (cleanup)
+- `-v`: Mount directories (as explained in Data Mounting section)
+- (Optional)`--gpus all`: Give container access to all GPUs (for methods like ProtT5, requires more steps not listed here to make GPU accessible to the container)
 
 ### Publishing
 
-You will need a Dockerhub account to push your containerized method to Dockerhub. After creating an account, you can push your container to Dockerhub.
+You will need a DockerHub account to push your containerized method to DockerHub. After creating an account:
 
 ```bash
+# Tag your container with your DockerHub username
 docker tag your_method yourusername/method_name:v1
+
+# Push to DockerHub (makes it publicly available)
 docker push yourusername/method_name:v1
+
+# ProtT5 example:
+# docker tag prott5_predictor myusername/prott5_predictor:v1
+# docker push myusername/prott5_predictor:v1
 ```
