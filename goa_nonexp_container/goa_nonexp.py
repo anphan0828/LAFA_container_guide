@@ -38,12 +38,14 @@ def create_predictions(terms_file, query_file, output_baseline):
     # Use dask to write to gzipped TSV
     # terms_df.to_csv(output_baseline, sep='\t', index=False, header=False)
     dask_df = dd.from_pandas(terms_df, npartitions=16)
-    # write_dask_dataframe_to_gzipped_tsv(dask_df, output_baseline) # this function is defined in utils/write_dask.py
-    dask_df.to_csv(output_baseline, sep="\t", index=False, header=False, single_file = True, compression='gzip')
+    if output_baseline.endswith('.gz'):
+        dask_df.to_csv(output_baseline, sep="\t", index=False, header=False, single_file = True, compression='gzip')
+    elif output_baseline.endswith('.tsv'):
+        dask_df.to_csv(output_baseline, sep="\t", index=False, header=False, single_file = True)
     print(f"Predictions for {len(set(terms_df['EntryID']))} proteins written to {output_baseline}")
     
     
-def goa_nonexp_predict(annot_file, selected_go, graph, query_file, output_baseline):
+def goa_nonexp_predict(annot_file, selected_go, graph, add_graph, query_file, output_baseline):
     # config_go_codes = GO_CODES
     # Reading config
     import yaml
@@ -69,6 +71,7 @@ def parse_args(argv):
     parser.add_argument('--annot_file',  help='Path to the UniProt GOA file', required=True)
     parser.add_argument('--selected_go',  help='Selected GO codes', required=True)
     parser.add_argument('--graph', help='Path to OBO file for GO graph', required=True)
+    parser.add_argument('--add_graph',help='Path to additional OBO file for GO graph at a later time point', required=False, default=None)
     parser.add_argument('--query_file',  help='FASTA file or text file containing query IDs', required=True)
     parser.add_argument('--output_baseline',  help='Path to the output file', required=True)
     return parser.parse_args(argv)    
@@ -80,6 +83,7 @@ def main():
         annot_file=args.annot_file,
         selected_go=args.selected_go,
         graph=args.graph,
+        add_graph=args.add_graph,
         query_file=args.query_file,
         output_baseline=args.output_baseline
     )
