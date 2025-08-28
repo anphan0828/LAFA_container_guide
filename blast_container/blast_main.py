@@ -46,7 +46,7 @@ def run_blast_search(query_file, train_sequences, train_taxonomy, blast_results,
     
     # Run the BLAST script
     cmd = [
-        str(blast_script),
+        "bash", str(blast_script),
         "--query", query_file,
         "--database", train_sequences,
         "--taxid", train_taxonomy,

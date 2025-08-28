@@ -45,7 +45,7 @@ def run_prott5_analysis(query_file, train_sequences, prott5_results, model_dir=N
     
     # Build command arguments
     cmd = [
-        str(prott5_script),
+        "bash", str(prott5_script),
         "--query", query_file,
         "--database", train_sequences,
         "--output", prott5_results,
