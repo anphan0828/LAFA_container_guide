@@ -110,6 +110,13 @@ def blast_predict(annot_file, query_file, indices, graph, add_graph,
         )
         annotation_mat, proteins, terms, _ = sparse_matrix_and_indices(terms_df)
         os.remove(f'{os.path.dirname(output_baseline)}/blast_terms.tsv')
+    elif '.tsv' in annot_file:
+        print("Loading annotations from TSV file")
+        terms_df = pd.read_csv(annot_file, sep='\t', header=0)
+        if terms_df.shape[1] != 3:
+            print("Invalid TSV format. Expected 3 columns: EntryID, term, aspect.")
+            sys.exit(1)
+        annotation_mat, proteins, terms, _ = sparse_matrix_and_indices(terms_df)
     elif annot_file.endswith('.npz'):
         if not indices:
             print("Please provide a term indices file for matrix input")
@@ -117,7 +124,10 @@ def blast_predict(annot_file, query_file, indices, graph, add_graph,
         annotation_mat = sparse.load_npz(annot_file)
         with open(indices, 'rb') as f:
             proteins, terms = cp.load(f)
-    
+    else:
+        print("Invalid annotation file format")
+        sys.exit(1)
+
     # Load query IDs
     query_ids = []
     if query_file.endswith('.fasta'):
@@ -203,7 +213,8 @@ def blast_predict(annot_file, query_file, indices, graph, add_graph,
             
         # Merge temporary files into final gzipped output
         print(f"Merging results into final output file: {output_baseline}")
-        with gzip.open(output_baseline, 'wt', newline='') as outfile:
+        open_func = gzip.open if output_baseline.endswith('.gz') else open
+        with open_func(output_baseline, 'wt', newline='') as outfile:
             for temp_file in temp_files:
                 with open(temp_file, 'r') as infile:
                     outfile.write(infile.read())
