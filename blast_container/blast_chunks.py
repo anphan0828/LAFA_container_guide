@@ -111,6 +111,7 @@ def blast_predict(annot_file, query_file, indices, graph, add_graph,
         annotation_mat, proteins, terms, _ = sparse_matrix_and_indices(terms_df)
         os.remove(f'{os.path.dirname(output_baseline)}/blast_terms.tsv')
     elif '.tsv' in annot_file:
+        print("Loading annotations from TSV file")
         terms_df = pd.read_csv(annot_file, sep='\t', header=0)
         if terms_df.shape[1] != 3:
             print("Invalid TSV format. Expected 3 columns: EntryID, term, aspect.")
@@ -123,7 +124,10 @@ def blast_predict(annot_file, query_file, indices, graph, add_graph,
         annotation_mat = sparse.load_npz(annot_file)
         with open(indices, 'rb') as f:
             proteins, terms = cp.load(f)
-    
+    else:
+        print("Invalid annotation file format")
+        sys.exit(1)
+
     # Load query IDs
     query_ids = []
     if query_file.endswith('.fasta'):
