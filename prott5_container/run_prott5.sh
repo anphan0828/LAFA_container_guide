@@ -94,7 +94,8 @@ echo "Step 2: Generating ProtT5 embeddings for database set..."
 python3 prott5_embedder.py --input "$DATABASE_FILE" --output "$DBSET_EMBEDDINGS" --per_protein 1 --model "$MODEL_DIR"
 
 echo "Step 3: Computing similarity matrix and processing embeddings..."
-python3 process_embeddings_gpu.py "$EVALSET_EMBEDDINGS" "$DBSET_EMBEDDINGS" "$OUTPUT_FILE"
+# python3 process_embeddings_gpu.py "$EVALSET_EMBEDDINGS" "$DBSET_EMBEDDINGS" "$OUTPUT_FILE"
+python3 process_embeddings_gpu_optimized.py "$EVALSET_EMBEDDINGS" "$DBSET_EMBEDDINGS" "$OUTPUT_FILE" "normalize"
 
 echo "Step 4: Normalizing similarity scores..."
 python3 normalize_embeddings.py "$OUTPUT_FILE"
@@ -110,7 +111,7 @@ OUTPUT_NORM=${OUTPUT_FILE/.tsv/_norm.tsv}
 
 # Clean up intermediate files
 echo "Cleaning up temporary files..."
-rm -rf "$TEMP_DIR"
+# rm -rf "$TEMP_DIR"
 
 # Verify output files were created
 if [[ -f "$OUTPUT_FILE" ]]; then

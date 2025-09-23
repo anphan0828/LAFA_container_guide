@@ -85,6 +85,8 @@ def main():
                         help='Path to output predictions file')
     
     # Optional arguments
+    parser.add_argument('--prott5_results', default=None, required=False,
+                        help='Path to ProtT5 similarity results file (if already computed)')
     parser.add_argument('--indices', '-i', default=None,
                         help='Path to term indices file (required for .npz annotation files)')
     parser.add_argument('--add_graph', default=None,
@@ -121,23 +123,28 @@ def main():
     else:
         model_dir = os.environ.get('HF_CACHE', '/app/.cache/huggingface/')
     
-    # Create file for ProtT5 results
-    # Use normalized output since that's what prott5_chunks expects
-    prott5_results_norm = f"{os.path.dirname(args.output_baseline)}/prott5_results_norm.tsv"
-
-    # The raw results file (before normalization)
-    prott5_results_raw = prott5_results_norm.replace('_norm.tsv', '.tsv')
-    
     try:
-        # Step 1: Run ProtT5 analysis
-        print("Step 1: Running ProtT5 embedding analysis...")
-        run_prott5_analysis(
-            query_file=args.query_file,
-            train_sequences=args.train_sequences,
-            prott5_results=prott5_results_raw,
-            model_dir=model_dir,
-            num_threads=args.num_threads
-        )
+        # If ProtT5 results file (normalized) is provided, use it directly
+        if args.prott5_results:
+            prott5_results_norm = args.prott5_results
+            print(f"Step 1: Using provided ProtT5 results: {prott5_results_norm}")
+        else:
+            # Create file for ProtT5 results
+            # Use normalized output since that's what prott5_chunks expects
+            prott5_results_norm = f"{os.path.dirname(args.output_baseline)}/prott5_results_norm.tsv"
+
+            # The raw results file (before normalization)
+            prott5_results_raw = prott5_results_norm.replace('_norm.tsv', '.tsv')
+        
+            print("Step 1: Running ProtT5 embedding analysis...")
+            # Step 1: Run ProtT5 analysis
+            run_prott5_analysis(
+                query_file=args.query_file,
+                train_sequences=args.train_sequences,
+                prott5_results=prott5_results_raw,
+                model_dir=model_dir,
+                num_threads=args.num_threads
+            )
         
         # Check if normalized file was created
         if not os.path.exists(prott5_results_norm):
