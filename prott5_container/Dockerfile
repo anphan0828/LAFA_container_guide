@@ -22,7 +22,7 @@ RUN mkdir -p /app/.cache/huggingface
 # Install Python dependencies
 COPY requirements2.txt .
 RUN pip3 install --no-cache-dir -r requirements2.txt
-
+RUN pip3 install --no-cache-dir cuml-cu11 --extra-index-url=https://pypi.nvidia.com
 # Pre-download the ProtT5 model during build
 RUN python3 -c "from transformers import T5EncoderModel, T5Tokenizer; \
     T5Tokenizer.from_pretrained('Rostlab/prot_t5_xl_half_uniref50-enc'); \

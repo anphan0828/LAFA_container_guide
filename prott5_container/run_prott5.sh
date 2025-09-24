@@ -97,8 +97,8 @@ echo "Step 3: Computing similarity matrix and processing embeddings..."
 # python3 process_embeddings_gpu.py "$EVALSET_EMBEDDINGS" "$DBSET_EMBEDDINGS" "$OUTPUT_FILE"
 python3 process_embeddings_gpu_optimized.py "$EVALSET_EMBEDDINGS" "$DBSET_EMBEDDINGS" "$OUTPUT_FILE" "normalize"
 
-echo "Step 4: Normalizing similarity scores..."
-python3 normalize_embeddings.py "$OUTPUT_FILE"
+#echo "Step 4: Normalizing similarity scores..."
+#python3 normalize_embeddings.py "$OUTPUT_FILE"
 
 # # Generate normalized output filename
 OUTPUT_NORM=${OUTPUT_FILE/.tsv/_norm.tsv}
