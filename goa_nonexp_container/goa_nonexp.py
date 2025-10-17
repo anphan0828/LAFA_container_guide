@@ -11,7 +11,7 @@ import os
 import argparse
 import pandas as pd
 from Bio import SeqIO
-import dask.dataframe as dd
+# import dask.dataframe as dd
 
 
     
@@ -35,13 +35,17 @@ def create_predictions(terms_file, query_file, output_baseline):
     del terms_df['aspect']
     terms_df['value'] = [1] * len(terms_df)
     
-    # Use dask to write to gzipped TSV
-    # terms_df.to_csv(output_baseline, sep='\t', index=False, header=False)
-    dask_df = dd.from_pandas(terms_df, npartitions=16)
-    if output_baseline.endswith('.gz'):
-        dask_df.to_csv(output_baseline, sep="\t", index=False, header=False, single_file = True, compression='gzip')
-    elif output_baseline.endswith('.tsv'):
-        dask_df.to_csv(output_baseline, sep="\t", index=False, header=False, single_file = True)
+    open_func = 'gzip' if output_baseline.endswith('.gz') else 'open'
+    with open_func(output_baseline, 'wt') as out_f:
+        for idx_, row in terms_df.iterrows():
+            out_f.write(f"{row['EntryID']}\t{row['term']}\t{row['value']}\n")
+    # # Use dask to write to gzipped TSV
+    # # terms_df.to_csv(output_baseline, sep='\t', index=False, header=False)
+    # dask_df = dd.from_pandas(terms_df, npartitions=16)
+    # if output_baseline.endswith('.gz'):
+    #     dask_df.to_csv(output_baseline, sep="\t", index=False, header=False, single_file = True, compression='gzip')
+    # elif output_baseline.endswith('.tsv'):
+    #     dask_df.to_csv(output_baseline, sep="\t", index=False, header=False, single_file = True)
     print(f"Predictions for {len(set(terms_df['EntryID']))} proteins written to {output_baseline}")
     
     
