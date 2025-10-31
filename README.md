@@ -10,7 +10,18 @@ We'll use our **ProtT5 container** (`prott5_container/` in this repository) as a
 
 ### 1. Input Requirements
 - **Required**: Protein sequences in FASTA format and/or protein IDs
-- **Optional**: Additional parameters via command-line arguments (e.g., `go.obo` file, GO annotations in GAF format)
+- **Provided** (more details can be found in the [Data Storage on HuggingFace](#data-storage-on-huggingface) section):
+  -   Training protein sequences (FASTA format)
+  -   Test protein sequences (FASTA format)
+  -   GO graph structure (OBO format)
+  -   Training labels/terms (TSV format, 3 columns `EntryID`, `term`, `aspect`)
+  -   Training taxonomy (TSV format no header, 2 columns `EntryID`,`TaxonID`)
+  -   Raw GOA file containing all annotations (GAF format, gzipped)
+  -   BLAST hits (TSV format, 6 columns `qseqid`, `sseqid`, `evalue`, `length`, `pident`, `nident`). BLAST self-hits are included.
+  -   AlphaFoldDB structures (PDB format, stored in TAR archives)
+- **Optional**: Additional parameters via command-line arguments (e.g., GO evidence code configuration)
+
+Please make sure that your container accepts input files in the provided format. If you need additional files to be provided, let us know.
 
 ### 2. Output Requirements
 - **Format**: 3-column TSV file (can be gzipped), with no header
@@ -252,7 +263,7 @@ docker push yourusername/method_name:v1
 # docker push myusername/prott5_predictor:v1
 ```
 
-### Data storage on HuggingFace
+## Data storage on HuggingFace
 Required data for input are stored in a public repository on HuggingFace. To download this data and use, you can either install HuggingFace Command Line Interface (CLI) [here](https://huggingface.co/docs/huggingface_hub/en/guides/cli#download-a-dataset-or-a-space) or load the data directly into Python.
 
 
