@@ -1,0 +1,7 @@
+go_codes:
+  EXPERIMENTAL: ["EXP", "IDA", "IPI", "IMP", "IGI", "IEP", "HTP", "HDA", "HMP", "HGI", "HEP"]
+  COMPUTATIONAL: ["ISS", "ISO", "ISA", "ISM", "IGC", "RCA"]
+  PHYLOGENETICAL: ["IBA", "IBD", "IKR", "IRD"]
+  AUTHORSTATEMENT: ["TAS", "NAS"]
+  CURATORSTATEMENT: ["IC", "ND"]
+  ELECTRONIC: ["IEA"]

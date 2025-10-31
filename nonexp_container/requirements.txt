@@ -1,0 +1,10 @@
+Bio==1.8.0
+biopython==1.85
+dask==2025.1.0
+networkx==3.4.2
+numpy==1.26.4
+obonet==1.0.0
+pandas==2.0.3
+PyYAML==6.0.2
+scipy==1.15.0
+pyarrow==20.0.0

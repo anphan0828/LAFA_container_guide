@@ -1,0 +1,15 @@
+Bootstrap: docker
+From: python:3.10
+
+%files
+	requirements.txt
+	goa_nonexp.py
+	retrieve_terms.py
+	ontology.py
+	config.yaml
+
+%post
+	pip install --no-cache-dir -r requirements.txt
+
+%runscript
+	exec python3 goa_nonexp.py "$@"
