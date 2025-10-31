@@ -281,4 +281,4 @@ hf download anphan0828/lafa --repo-type dataset --local-dir="your_local_dir"
   5. BLAST hits: `blast_results.tsv` includes BLAST hits of every sequence in test set against the training set. BLAST format is as follows: `BLAST_FORMAT="6 qseqid sseqid evalue length pident nident"`. Self-hits are included.
   6. Additional files: `train_taxonomy.tsv` (taxonomy ID for every protein in the training set), `goa_uniprot_sprot.gaf.226.gz` (all GO annotations of SwissProt proteins). 
  
-Note that the file names can be standardized for later releases.
+Note that the file names might be standardized in later releases, so input files should be passed into container as command-line arguments instead of hard-coded paths inside your script.
