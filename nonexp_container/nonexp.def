@@ -2,14 +2,15 @@ Bootstrap: docker
 From: python:3.10
 
 %files
-	requirements.txt
-	goa_nonexp.py
-	retrieve_terms.py
-	ontology.py
-	config.yaml
+    requirements.txt /app/requirements.txt
+    goa_nonexp.py /app/goa_nonexp.py
+    retrieve_terms.py /app/retrieve_terms.py
+    ontology.py /app/ontology.py
+    config.yaml /app/config.yaml
 
 %post
-	pip install --no-cache-dir -r requirements.txt
+    pip install --no-cache-dir -r /app/requirements.txt
 
 %runscript
-	exec python3 goa_nonexp.py "$@"
+    cd /app
+    exec python3 goa_nonexp.py "$@"
