@@ -8,6 +8,7 @@ Requires helper scripts retrieve_terms.py and ontology.py
 from retrieve_terms import wrapper_retrieve_terms
 import sys
 import os
+import gzip
 import argparse
 import pandas as pd
 from Bio import SeqIO
@@ -35,7 +36,7 @@ def create_predictions(terms_file, query_file, output_baseline):
     del terms_df['aspect']
     terms_df['value'] = [1] * len(terms_df)
     
-    open_func = 'gzip' if output_baseline.endswith('.gz') else 'open'
+    open_func = gzip.open if output_baseline.endswith('.gz') else open
     with open_func(output_baseline, 'wt') as out_f:
         for idx_, row in terms_df.iterrows():
             out_f.write(f"{row['EntryID']}\t{row['term']}\t{row['value']}\n")

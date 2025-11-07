@@ -79,7 +79,7 @@ def process_query_chunk(task_data):
 
 
 def prott5_predict(annot_file, query_file, indices, graph, add_graph,
-                 prott5_results, output_baseline,  config_path=None, keep_self_hits=False):
+                 prott5_results, output_baseline,  config_path=None, keep_self_hits=False, num_threads=4):
     """Make predictions for query sequences based on prott5 hits."""
     
     if '.gaf' in annot_file or '.dat' in annot_file:
@@ -164,7 +164,7 @@ def prott5_predict(annot_file, query_file, indices, graph, add_graph,
     prott5_groups = dict(tuple(prott5_df.groupby('qseqid_acc')))
     
     # Determine number of processes
-    num_processes = min(int(os.environ.get('NUM_THREADS', multiprocessing.cpu_count())), 16)
+    num_processes = min(int(os.environ.get('NUM_THREADS', num_threads)), 8)
     num_processes = max(1, num_processes)
     print(f"Using {num_processes} processes for parallel computation")
     

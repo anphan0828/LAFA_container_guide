@@ -31,7 +31,7 @@ RUN python3 -c "from transformers import T5EncoderModel, T5Tokenizer; \
 # Copy application files
 WORKDIR /app
 COPY prott5_main.py .
-COPY prott5_chunks.py .
+COPY prott5_gpu.py .
 COPY run_prott5.sh .
 COPY prott5_embedder.py .
 COPY process_embeddings_gpu_optimized.py .

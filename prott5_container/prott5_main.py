@@ -154,10 +154,25 @@ def main():
         # Step 2: Run prott5_chunks.py for predictions
         print("Step 2: Generating predictions from ProtT5 similarity results...")
         
-        # Import and run prott5_chunks
-        from prott5_chunks import prott5_predict
+        # # Import and run prott5_chunks
+        # from prott5_chunks import prott5_predict
         
-        prott5_predict(
+        # prott5_predict(
+        #     annot_file=args.annot_file,
+        #     query_file=args.query_file,
+        #     indices=args.indices,
+        #     graph=args.graph,
+        #     add_graph=args.add_graph,
+        #     prott5_results=prott5_results_norm,
+        #     output_baseline=args.output_baseline,
+        #     config_path=os.path.join(os.path.dirname(__file__), 'config.yaml'),
+        #     keep_self_hits=args.keep_self_hits,
+        #     num_threads=args.num_threads
+        # )
+        
+        # Testing GPU
+        from prott5_gpu import prott5_predict_gpu
+        prott5_predict_gpu(
             annot_file=args.annot_file,
             query_file=args.query_file,
             indices=args.indices,
@@ -166,7 +181,8 @@ def main():
             prott5_results=prott5_results_norm,
             output_baseline=args.output_baseline,
             config_path=os.path.join(os.path.dirname(__file__), 'config.yaml'),
-            keep_self_hits=args.keep_self_hits
+            keep_self_hits=args.keep_self_hits,
+            batch_size=1000
         )
         
         print(f"ProtT5 prediction pipeline completed successfully!")
