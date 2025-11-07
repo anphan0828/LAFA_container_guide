@@ -12,7 +12,7 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy all Python scripts and config files
-COPY blast_chunks.py .
+COPY blast_chunks_optimized.py .
 COPY blast_main.py .
 COPY retrieve_terms.py .
 COPY ontology.py .

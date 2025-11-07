@@ -85,6 +85,8 @@ def main():
                         help='Path to output predictions file')
     
     # Optional arguments
+    parser.add_argument('--blast_results', default=None,
+                        help='Path to precomputed BLAST results file (if available)')
     parser.add_argument('--indices', '-i', default=None,
                         help='Path to term indices file (required for .npz annotation files)')
     parser.add_argument('--add_graph', default=None,
@@ -99,6 +101,8 @@ def main():
                         help='Keep self-hits in BLAST results')
     parser.add_argument('--num_threads', type=int, default=8,
                         help='Number of threads for BLAST (default: 8)')
+    parser.add_argument('--n_terms', '-n', type=int, required=False,
+                        help='Upper limit for number of terms per target', default=None)
     
     args = parser.parse_args()
     
@@ -129,8 +133,11 @@ def main():
         sys.exit(1)
     
     # Create file for BLAST results
-    blast_results = f"{os.path.dirname(args.output_baseline)}/blast_results.tsv"
-
+    if not args.blast_results or not os.path.exists(args.blast_results):
+        blast_results = f"{os.path.dirname(args.output_baseline)}/blast_results.tsv"
+    else:
+        blast_results = args.blast_results
+        
     try:
         # Step 1: Run BLAST search
         print("Step 1: Running BLAST search...")
@@ -146,7 +153,7 @@ def main():
         print("Step 2: Generating predictions from BLAST results...")
         
         # Import and run blast_chunks
-        from blast_chunks import blast_predict
+        from blast_chunks_optimized import blast_predict
         
         blast_predict(
             annot_file=args.annot_file,
@@ -158,7 +165,8 @@ def main():
             output_baseline=args.output_baseline,
             config_path=os.path.join(os.path.dirname(__file__), 'config.yaml'),
             keep_self_hits=args.keep_self_hits,
-            use_rscore=args.use_rscore
+            use_rscore=args.use_rscore,
+            n_terms=args.n_terms
         )
         
         print(f"Prediction pipeline completed successfully!")
