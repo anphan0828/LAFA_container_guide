@@ -110,14 +110,14 @@ OUTPUT_NORM=${OUTPUT_FILE/.tsv/_norm.tsv}
 # sed -ri 's/\|[^\t]*\t/\t/g' "$OUTPUT_NORM"
 
 # Clean up intermediate files
-echo "Cleaning up temporary files..."
+# echo "Cleaning up temporary files..."
 # rm -rf "$TEMP_DIR"
 
 # Verify output files were created
 if [[ -f "$OUTPUT_FILE" ]]; then
     RESULT_COUNT=$(wc -l < "$OUTPUT_FILE")
     echo "ProtT5 analysis completed successfully!"
-    echo "Raw results written to: $OUTPUT_FILE"
+    # echo "Raw results written to: $OUTPUT_FILE"
     echo "Normalized results written to: $OUTPUT_NORM"
     echo "Number of similarity results: $RESULT_COUNT"
 else

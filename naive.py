@@ -20,7 +20,7 @@ from democafa.datacollection.retrieve_terms import wrapper_retrieve_terms
 from democafa.utils.ontology import sparse_matrix_and_indices, fetch_aspect
 from democafa.config import GO_CODES
 
-def naive_predict(annot_file, query_file: str, indices, graph, add_graph, output_baseline) -> pd.DataFrame:
+def naive_predict(annot_file, query_file: str, indices, graph, add_graph, output_baseline, n_terms=None) -> pd.DataFrame:
     """
     Make predictions based on term frequencies in training annotations.
     
@@ -97,10 +97,7 @@ def naive_predict(annot_file, query_file: str, indices, graph, add_graph, output
     if len(max_freqs) == 0: # when terms were not propagated
         aspect_terms_df = terms_df.groupby('aspect')['EntryID'].apply(set).apply(len).reset_index(name='count')
         max_freqs = {aspect: count for aspect, count in zip(aspect_terms_df['aspect'], aspect_terms_df['count'])}
-    # if max_freq > 0:
-    #     normalized_scores = term_frequencies / max_freq
-    # else:
-    #     normalized_scores = term_frequencies
+
     assert len(max_freqs) == 3, "Expected three aspects for max frequencies: P, C, F"
     print(f"Max frequencies per aspect: {max_freqs}")
     # Get terms by aspect
@@ -113,6 +110,18 @@ def naive_predict(annot_file, query_file: str, indices, graph, add_graph, output
         aspect_indices = [i for t,i in terms.items() if t in aspect_terms[aspect]]
         normalized_scores[aspect_indices] = term_frequencies[aspect_indices] / max_freq
     
+    # Keep highest-scoring n_terms/3 for each aspect if n_terms is specified
+    if n_terms:
+        top_k = int(n_terms / 3)
+        for aspect in roots:
+            aspect_indices = [i for t,i in terms.items() if t in aspect_terms[aspect]]
+            aspect_scores = normalized_scores[aspect_indices]
+            if len(aspect_scores) > top_k:
+                # partially sort ascending the aspect_scores, so that top_k element is in the sorted array
+                # then threshold is the value of that top_k-th largest element
+                threshold = np.partition(aspect_scores, -top_k)[-top_k] 
+                mask = (normalized_scores <= threshold) & np.isin(np.arange(len(normalized_scores)), aspect_indices)
+                normalized_scores[mask] = 0.0
     ## RAM-INTENSIVE PART ##    
     # # Create output matrix with same scores for all queries
     # n_queries = len(query_ids)
@@ -175,6 +184,8 @@ def parse_args(argv):
                         help='FASTA file or text file containing query IDs', required=True)
     parser.add_argument('--output_baseline', '-o', 
                         help='Path to the output file', required=True)
+    parser.add_argument('--n_terms', '-n', type=int, required=False,
+                        help='Upper limit for number of terms per target', default=None)
     return parser.parse_args(argv)    
 
 
@@ -186,7 +197,8 @@ def main():
         indices=args.indices,
         graph=args.graph,
         add_graph=args.add_graph,
-        output_baseline=args.output_baseline
+        output_baseline=args.output_baseline,
+        n_terms=args.n_terms
     )
     
     

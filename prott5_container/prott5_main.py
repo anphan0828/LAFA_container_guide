@@ -97,6 +97,8 @@ def main():
                         help='Keep self-hits in ProtT5 results')
     parser.add_argument('--num_threads', type=int, default=8,
                         help='Number of threads (default: 8)')
+    parser.add_argument('--n_terms', type=int, default=None,
+                        help='Maximum number of terms to produce predictions per target (default: None)')
     
     args = parser.parse_args()
     
@@ -182,7 +184,8 @@ def main():
             output_baseline=args.output_baseline,
             config_path=os.path.join(os.path.dirname(__file__), 'config.yaml'),
             keep_self_hits=args.keep_self_hits,
-            batch_size=1000
+            batch_size=1000,
+            n_terms=args.n_terms
         )
         
         print(f"ProtT5 prediction pipeline completed successfully!")
@@ -193,11 +196,12 @@ def main():
         import traceback
         traceback.print_exc()
         sys.exit(1)
-    # finally:
-    #     # Clean up temporary ProtT5 results files
-    #     for temp_file in [prott5_results_raw, prott5_results_norm]:
-    #         if os.path.exists(temp_file):
-    #             os.unlink(temp_file)
+    finally:
+        # Clean up temporary ProtT5 results files
+        if os.path.exists(prott5_results_raw):
+            os.unlink(prott5_results_raw)
+        # if os.path.exists(prott5_results_norm):
+        #     os.unlink(prott5_results_norm)
 
 
 if __name__ == '__main__':

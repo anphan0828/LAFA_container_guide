@@ -32,7 +32,7 @@ def calculate_rscore(evalue: float, max_rscore: float = 500.0) -> float:
 
 def process_query_chunk(task_data):
     query_chunk, worker_static_data = task_data
-    (blast_groups, annotation_mat, proteins, terms, use_rscore) = worker_static_data
+    (blast_groups, annotation_mat, proteins, terms, use_rscore, n_terms) = worker_static_data
     results = []
     term_names = list(terms.keys())
     
@@ -73,17 +73,51 @@ def process_query_chunk(task_data):
         weighted_matrix = hit_annots.multiply(sparse.csr_matrix(weight_values).T) 
         max_scores = weighted_matrix.max(axis=0) 
         
-        # Collect non-zero scores
-        for term_index, score in zip(max_scores.col, max_scores.data):
-            if score > 0:
-                term = term_names[term_index]
-                results.append([qid, term, score])
-    
+        # if n_terms is not None and max_scores.nnz > n_terms:
+        #     # Convert sparse matrix to dense array for processing
+        #     scores_array = max_scores.toarray().flatten()
+            
+        #     # Find indices of top n_terms scores
+        #     top_indices = np.argpartition(scores_array, -n_terms)[-n_terms:]
+            
+        #     # Keep only top scores (filter out the rest)
+        #     top_scores = scores_array[top_indices]
+            
+        #     # Create results only for top n_terms
+        #     for i, term_index in enumerate(top_indices):
+        #         score = top_scores[i]
+        #         if score > 0:
+        #             term = term_names[term_index]
+        #             results.append([qid, term, score])
+        # else:        
+        #     # Collect non-zero scores
+        #     for term_index, score in zip(max_scores.col, max_scores.data):
+        #         if score > 0:
+        #             term = term_names[term_index]
+        #             results.append([qid, term, score])
+        
+        # Convert to COO for efficient iteration
+        max_scores_coo = max_scores.tocoo()
+        
+        # Collect all non-zero scores
+        term_score_pairs = [(term_index, score) 
+                           for term_index, score in zip(max_scores_coo.col, max_scores_coo.data)
+                           if score > 0]
+        
+        # Apply n_terms limit if specified
+        if n_terms is not None and len(term_score_pairs) > n_terms:
+            # Sort by score descending and keep top n_terms
+            term_score_pairs.sort(key=lambda x: x[1], reverse=True)
+            term_score_pairs = term_score_pairs[:n_terms]
+        for term_index, score in term_score_pairs:
+            term = term_names[term_index]
+            results.append([qid, term, score])
+            
     return results
 
 
 def blast_predict(annot_file, query_file, indices, graph, add_graph,
-                 blast_results, output_baseline, keep_self_hits=False, use_rscore=False):
+                 blast_results, output_baseline, keep_self_hits=False, use_rscore=False, n_terms=None):
     """Make predictions for query sequences based on BLAST hits."""
     # Load annotation matrix from appropriate source
     if '.gaf' in annot_file or '.dat' in annot_file:
@@ -105,6 +139,13 @@ def blast_predict(annot_file, query_file, indices, graph, add_graph,
         )
         annotation_mat, proteins, terms, _ = sparse_matrix_and_indices(terms_df)
         os.remove(f'{os.path.dirname(output_baseline)}/blast_terms.tsv')
+    elif '.tsv' in annot_file:
+        print("Loading annotations from TSV file")
+        terms_df = pd.read_csv(annot_file, sep='\t', header=0)
+        if terms_df.shape[1] != 3:
+            print("Invalid TSV format. Expected 3 columns: EntryID, term, aspect.")
+            sys.exit(1)
+        annotation_mat, proteins, terms, _ = sparse_matrix_and_indices(terms_df)
     elif annot_file.endswith('.npz'):
         if not indices:
             print("Please provide a term indices file for matrix input")
@@ -112,7 +153,10 @@ def blast_predict(annot_file, query_file, indices, graph, add_graph,
         annotation_mat = sparse.load_npz(annot_file)
         with open(indices, 'rb') as f:
             proteins, terms = cp.load(f)
-    
+    else:
+        print("Invalid annotation file format")
+        sys.exit(1)
+        
     # Load query IDs
     query_ids = []
     if query_file.endswith('.fasta'):
@@ -159,15 +203,16 @@ def blast_predict(annot_file, query_file, indices, graph, add_graph,
     blast_groups = dict(tuple(blast_df.groupby('qseqid_acc')))
     
     # Determine number of processes
-    num_processes = min(int(os.environ.get('SLURM_CPUS_PER_TASK', multiprocessing.cpu_count())) - 1, 16)
-    num_processes = max(1, num_processes)
+    # num_processes = min(int(os.environ.get('SLURM_CPUS_PER_TASK', multiprocessing.cpu_count())) - 1, 16)
+    # num_processes = max(1, num_processes)
+    num_processes = 8
     print(f"Using {num_processes} processes for parallel computation")
     
     # Create temporary directory for output chunks
     temp_dir = tempfile.mkdtemp(dir=os.path.dirname(output_baseline))
     
     # Prepare worker data
-    worker_static_data = (blast_groups, annotation_mat, proteins, terms, use_rscore)
+    worker_static_data = (blast_groups, annotation_mat, proteins, terms, use_rscore, n_terms)
     
     # Create chunks of query IDs for better memory management
     chunk_size = max(1, len(effective_queries) // (num_processes * 10))
@@ -198,7 +243,8 @@ def blast_predict(annot_file, query_file, indices, graph, add_graph,
             
         # Merge temporary files into final gzipped output
         print(f"Merging results into final output file: {output_baseline}")
-        with gzip.open(output_baseline, 'wt', newline='') as outfile:
+        open_func = gzip.open if output_baseline.endswith('.gz') else open
+        with open_func(output_baseline, 'wt', newline='') as outfile:
             for temp_file in temp_files:
                 with open(temp_file, 'r') as infile:
                     outfile.write(infile.read())
@@ -240,6 +286,8 @@ def parse_args(argv):
                         help='Use R-score instead of sequence identity for weighting')
     parser.add_argument('--keep_self_hits', action='store_true',
                         help='Keep self-hits in BLAST results')
+    parser.add_argument('--n_terms', '-n', type=int, required=False,
+                        help='Upper limit for number of terms per target', default=None)
     return parser.parse_args(argv)
 
 
@@ -254,7 +302,8 @@ def main():
         blast_results=args.blast_results,
         output_baseline=args.output_baseline,
         keep_self_hits=args.keep_self_hits,
-        use_rscore=args.use_rscore
+        use_rscore=args.use_rscore,
+        n_terms=args.n_terms
     )
 
 
