@@ -1,237 +1,225 @@
 #!/usr/bin/env python3
-"""
-BLAST-based predictor implementation optimized for large-scale processing.
-Makes predictions based on BLAST sequence similarity.
-"""
+"""BLAST-based predictor with single-pass I/O and optional GPU aggregation."""
 
 import os
 import sys
+import csv
+import gzip
+import shutil
+import tempfile
+import argparse
 import numpy as np
 import pandas as pd
 from scipy import sparse
 import pickle as cp
 from Bio import SeqIO
-import argparse
-import multiprocessing
 from tqdm import tqdm
-import csv
-import gzip
-import tempfile
+
 from retrieve_terms import wrapper_retrieve_terms
 from ontology import sparse_matrix_and_indices
 
+try:
+    import cupy as cp_gpu
+    import cupyx.scipy.sparse as cp_sparse
+    GPU_AVAILABLE = True
+except ImportError:
+    GPU_AVAILABLE = False
 
-def calculate_rscore(evalue: float, max_rscore: float = 500.0) -> float:
-    """Calculate R-score from BLAST E-value."""
-    if evalue == 0:
-        return max_rscore
-    rscore = -np.log10(evalue) + 2
-    return min(rscore, max_rscore)
+
+def calculate_rscore_array(evalues, max_rscore=500.0):
+    """Vectorized R-score calculation compatible with numpy arrays."""
+
+    evalues = np.asarray(evalues, dtype=np.float64)
+    rscores = np.full(evalues.shape, max_rscore, dtype=np.float32)
+    mask = evalues > 0
+    if np.any(mask):
+        with np.errstate(divide='ignore'):
+            scores = -np.log10(evalues[mask]) + 2
+        rscores[mask] = np.minimum(scores, max_rscore)
+    return rscores
 
 
-def process_query_chunk(task_data):
-    query_chunk, worker_static_data = task_data
-    (blast_groups, annotation_mat, proteins, terms, use_rscore, n_terms) = worker_static_data
-    results = []
-    term_names = list(terms.keys())
-    
-    # Process each query in the chunk
-    for qid in query_chunk:
-        if qid not in blast_groups:
+def chunk_list(items, chunk_size):
+    for i in range(0, len(items), chunk_size):
+        yield items[i:i + chunk_size]
+
+
+def partition_blast_hits_single_pass(blast_results, query_set, query_to_bucket,
+                                     keep_self_hits, chunksize, num_buckets):
+    """Stream the BLAST table once, bucketizing hits per query."""
+
+    temp_dir = tempfile.mkdtemp(prefix='blast_hits_')
+    bucket_paths = [os.path.join(temp_dir, f'bucket_{i}.tsv') for i in range(num_buckets)]
+    bucket_has_header = [False] * num_buckets
+    bucket_query_sets = [set() for _ in range(num_buckets)]
+    queries_with_hits = set()
+
+    dtype_map = {'evalue': np.float64, 'pident': np.float32}
+
+    for chunk in pd.read_csv(
+        blast_results,
+        sep='\t',
+        header=None,
+        names=['qseqid', 'sseqid', 'evalue', 'length', 'pident', 'nident'],
+        usecols=['qseqid', 'sseqid', 'evalue', 'pident'],
+        chunksize=chunksize,
+        dtype=dtype_map,
+    ):
+        q_parts = chunk['qseqid'].str.split('|', n=2, expand=True)
+        chunk['qseqid_acc'] = q_parts[1].fillna(q_parts[0])
+        chunk = chunk[chunk['qseqid_acc'].isin(query_set)]
+        if chunk.empty:
             continue
-        
-        hits = blast_groups[qid]
-        
-        if len(hits) == 0:
+
+        s_parts = chunk['sseqid'].str.split('|', n=2, expand=True)
+        chunk['sseqid_acc'] = s_parts[1].fillna(s_parts[0])
+        if not keep_self_hits:
+            chunk = chunk[chunk['sseqid_acc'] != chunk['qseqid_acc']]
+        if chunk.empty:
             continue
-            
-        # Sort and deduplicate hits
-        hits = hits.sort_values('evalue', ascending=True)
-        hits_unique = hits.drop_duplicates('sseqid_acc', keep='first')
-        
-        # Calculate weights for hits
-        weights = {}
-        for _, hit in hits_unique.iterrows():
-            if hit['sseqid_acc'] not in proteins:
+
+        chunk['bucket'] = chunk['qseqid_acc'].map(query_to_bucket)
+
+        for bucket_idx, bucket_df in chunk.groupby('bucket'):
+            if bucket_df.empty:
                 continue
-            weights[hit['sseqid_acc']] = calculate_rscore(hit['evalue']) if use_rscore else hit['pident']/100.0
-        
-        if not weights:
+            bucket_df = bucket_df[['qseqid_acc', 'sseqid_acc', 'evalue', 'pident']]
+            mode = 'w' if not bucket_has_header[bucket_idx] else 'a'
+            bucket_df.to_csv(
+                bucket_paths[bucket_idx],
+                sep='\t',
+                header=not bucket_has_header[bucket_idx],
+                index=False,
+                mode=mode,
+            )
+            bucket_has_header[bucket_idx] = True
+            qids = bucket_df['qseqid_acc'].unique()
+            bucket_query_sets[bucket_idx].update(qids)
+            queries_with_hits.update(qids)
+
+    return temp_dir, bucket_paths, bucket_query_sets, queries_with_hits
+
+
+def prepare_batch_arrays(batch_hits_df, proteins, batch_query_to_local, use_rscore):
+    """Return per-hit arrays for GPU/CPU aggregation."""
+
+    if batch_hits_df.empty:
+        return None
+
+    batch_hits_df = batch_hits_df.sort_values(
+        by=['qseqid_acc', 'evalue'], ascending=[True, True], kind='mergesort'
+    )
+    batch_hits_df = batch_hits_df.drop_duplicates(
+        subset=['qseqid_acc', 'sseqid_acc'], keep='first'
+    )
+
+    batch_hits_df['protein_idx'] = batch_hits_df['sseqid_acc'].map(proteins)
+    batch_hits_df = batch_hits_df.dropna(subset=['protein_idx'])
+    if batch_hits_df.empty:
+        return None
+
+    batch_hits_df['query_local_idx'] = batch_hits_df['qseqid_acc'].map(batch_query_to_local)
+    batch_hits_df = batch_hits_df.dropna(subset=['query_local_idx'])
+    if batch_hits_df.empty:
+        return None
+
+    query_idx = batch_hits_df['query_local_idx'].to_numpy(dtype=np.int32, copy=False)
+    protein_idx = batch_hits_df['protein_idx'].to_numpy(dtype=np.int32, copy=False)
+
+    if use_rscore:
+        weights = calculate_rscore_array(batch_hits_df['evalue'].to_numpy(dtype=np.float64, copy=False))
+    else:
+        weights = batch_hits_df['pident'].to_numpy(dtype=np.float32, copy=False) / 100.0
+
+    valid_mask = weights > 0
+    if not np.any(valid_mask):
+        return None
+
+    return (
+        query_idx[valid_mask],
+        protein_idx[valid_mask],
+        weights[valid_mask].astype(np.float32, copy=False),
+    )
+
+
+def collect_batch_results(batch_query_names, batch_scores, term_names, n_terms):
+    """Convert dense batch scores into prediction rows."""
+
+    results = []
+    for local_idx, qid in enumerate(batch_query_names):
+        row = batch_scores[local_idx]
+        nz_terms = np.flatnonzero(row)
+        if nz_terms.size == 0:
             continue
-            
-        # Get annotations for hit sequences and weight them
-        hit_idx = [proteins[hit_seq] for hit_seq in weights.keys() if hit_seq in proteins]
-        if not hit_idx:
-            continue
-            
-        hit_idx = np.array(hit_idx)
-        weight_values = np.array([weights[hit_seq] for hit_seq in weights.keys() if hit_seq in proteins])
-        
-        # Get annotations and multiply by weights
-        hit_annots = annotation_mat[hit_idx, :]
-        weighted_matrix = hit_annots.multiply(sparse.csr_matrix(weight_values).T) 
-        max_scores = weighted_matrix.max(axis=0) 
-        
-        # if n_terms is not None and max_scores.nnz > n_terms:
-        #     # Convert sparse matrix to dense array for processing
-        #     scores_array = max_scores.toarray().flatten()
-            
-        #     # Find indices of top n_terms scores
-        #     top_indices = np.argpartition(scores_array, -n_terms)[-n_terms:]
-            
-        #     # Keep only top scores (filter out the rest)
-        #     top_scores = scores_array[top_indices]
-            
-        #     # Create results only for top n_terms
-        #     for i, term_index in enumerate(top_indices):
-        #         score = top_scores[i]
-        #         if score > 0:
-        #             term = term_names[term_index]
-        #             results.append([qid, term, score])
-        # else:        
-        #     # Collect non-zero scores
-        #     for term_index, score in zip(max_scores.col, max_scores.data):
-        #         if score > 0:
-        #             term = term_names[term_index]
-        #             results.append([qid, term, score])
-        
-        # Convert to COO for efficient iteration
-        max_scores_coo = max_scores.tocoo()
-        
-        # Collect all non-zero scores
-        term_score_pairs = [(term_index, score) 
-                           for term_index, score in zip(max_scores_coo.col, max_scores_coo.data)
-                           if score > 0]
-        
-        # Apply n_terms limit if specified
-        if n_terms is not None and len(term_score_pairs) > n_terms:
-            # Sort by score descending and keep top n_terms
-            term_score_pairs.sort(key=lambda x: x[1], reverse=True)
-            term_score_pairs = term_score_pairs[:n_terms]
-        for term_index, score in term_score_pairs:
-            term = term_names[term_index]
-            results.append([qid, term, score])
-            
+        if n_terms is not None and nz_terms.size > n_terms:
+            top_idx = nz_terms[np.argsort(row[nz_terms])[-n_terms:]]
+            top_idx = top_idx[np.argsort(row[top_idx])[::-1]]
+        else:
+            top_idx = nz_terms
+        for term_idx in top_idx:
+            results.append([qid, term_names[term_idx], float(row[term_idx])])
     return results
 
-def process_query_chunk_optimized(task_data):
-    """Optimized version using numpy arrays instead of DataFrames."""
-    query_chunk, worker_static_data = task_data
-    (blast_data_dict, annotation_mat, proteins, terms, use_rscore, n_terms) = worker_static_data
-    results = []
-    term_names = list(terms.keys())
-    
-    # Process each query in the chunk
-    for qid in query_chunk:
-        if qid not in blast_data_dict:
-            continue
-        
-        # Get pre-sorted arrays for this query (much faster than DataFrame)
-        hit_data = blast_data_dict[qid]
-        sseqids = hit_data['sseqid']
-        evalues = hit_data['evalue']
-        pidents = hit_data['pident']
-        
-        if len(sseqids) == 0:
-            continue
-        
-        # Build weights dictionary using numpy operations (much faster)
-        weights = {}
-        seen = set()
-        
-        for i in range(len(sseqids)):
-            sseqid = sseqids[i]
-            
-            # Skip duplicates (already sorted by evalue, so first is best)
-            if sseqid in seen or sseqid not in proteins:
-                continue
-            
-            seen.add(sseqid)
-            
-            # Calculate weight
-            if use_rscore:
-                weight = calculate_rscore(evalues[i])
-            else:
-                weight = pidents[i] / 100.0
-            
-            weights[sseqid] = weight
-        
-        if not weights:
-            continue
-        
-        # Vectorized operations for annotation lookup
-        hit_seqs = list(weights.keys())
-        hit_idx = np.array([proteins[seq] for seq in hit_seqs])
-        weight_values = np.array([weights[seq] for seq in hit_seqs])
-        
-        # Get weighted scores
-        hit_annots = annotation_mat[hit_idx, :]
-        weighted_matrix = hit_annots.multiply(sparse.csr_matrix(weight_values).T)
-        max_scores = weighted_matrix.max(axis=0)
-        
-        # Convert to COO for efficient iteration
-        max_scores_coo = max_scores.tocoo()
-        
-        # Collect all non-zero scores
-        term_score_pairs = [(term_index, score)
-                           for term_index, score in zip(max_scores_coo.col, max_scores_coo.data)
-                           if score > 0]
-        
-        # Apply n_terms limit if specified
-        if n_terms is not None and len(term_score_pairs) > n_terms:
-            term_score_pairs.sort(key=lambda x: x[1], reverse=True)
-            term_score_pairs = term_score_pairs[:n_terms]
-        
-        # Add to results
-        for term_index, score in term_score_pairs:
-            term = term_names[term_index]
-            results.append([qid, term, score])
-    
-    return results
 
-def preprocess_blast_data(blast_df, proteins):
-    """
-    Pre-process BLAST data into efficient numpy arrays grouped by query.
-    This replaces the memory-heavy DataFrame groupby operation.
-    """
-    print("Preprocessing BLAST data into efficient format...")
-    
-    # Sort by query and evalue (do this once upfront)
-    blast_df = blast_df.sort_values(['qseqid_acc', 'evalue'], ascending=True)
-    
-    # Create dictionary mapping query -> numpy arrays
-    blast_data_dict = {}
-    
-    # Group by query ID efficiently
-    grouped = blast_df.groupby('qseqid_acc', sort=False)
-    
-    for qid, group in tqdm(grouped, desc="Preprocessing queries"):
-        # Filter to only proteins in our database
-        mask = group['sseqid_acc'].isin(proteins)
-        filtered_group = group[mask]
-        
-        if len(filtered_group) == 0:
-            continue
-        
-        # Store as numpy arrays (much more memory efficient than DataFrame)
-        blast_data_dict[qid] = {
-            'sseqid': filtered_group['sseqid_acc'].values,
-            'evalue': filtered_group['evalue'].values,
-            'pident': filtered_group['pident'].values
-        }
-    
-    return blast_data_dict
+def process_query_batch_cpu(batch_query_names, batch_hits_df, annotation_mat,
+                            proteins, term_names, use_rscore, n_terms):
+    batch_query_to_local = {qid: idx for idx, qid in enumerate(batch_query_names)}
+    prepared = prepare_batch_arrays(batch_hits_df, proteins, batch_query_to_local, use_rscore)
+    if prepared is None:
+        return []
+    query_idx, protein_idx, weights = prepared
+
+    hit_annots = annotation_mat[protein_idx, :].tocoo()
+    if hit_annots.nnz == 0:
+        return []
+
+    weighted_data = hit_annots.data * weights[hit_annots.row]
+    term_indices = hit_annots.col
+    query_assignments = query_idx[hit_annots.row]
+
+    batch_scores = np.zeros((len(batch_query_names), annotation_mat.shape[1]), dtype=np.float32)
+    np.maximum.at(batch_scores, (query_assignments, term_indices), weighted_data)
+
+    return collect_batch_results(batch_query_names, batch_scores, term_names, n_terms)
+
+
+def process_query_batch_gpu(batch_query_names, batch_hits_df, annotation_mat_gpu,
+                            proteins, term_names, use_rscore, n_terms):
+    batch_query_to_local = {qid: idx for idx, qid in enumerate(batch_query_names)}
+    prepared = prepare_batch_arrays(batch_hits_df, proteins, batch_query_to_local, use_rscore)
+    if prepared is None:
+        return []
+    query_idx, protein_idx, weights = prepared
+
+    query_idx_gpu = cp_gpu.asarray(query_idx)
+    protein_idx_gpu = cp_gpu.asarray(protein_idx)
+    weights_gpu = cp_gpu.asarray(weights)
+
+    hit_annots = annotation_mat_gpu[protein_idx_gpu, :]
+    if hit_annots.nnz == 0:
+        return []
+    hit_annots = hit_annots.tocoo()
+
+    weighted_data = hit_annots.data * weights_gpu[hit_annots.row]
+    term_indices = hit_annots.col
+    query_assignments = query_idx_gpu[hit_annots.row]
+
+    batch_scores = cp_gpu.zeros((len(batch_query_names), annotation_mat_gpu.shape[1]), dtype=cp_gpu.float32)
+    cp_gpu.maximum.at(batch_scores, (query_assignments, term_indices), weighted_data)
+
+    batch_scores_cpu = cp_gpu.asnumpy(batch_scores)
+    return collect_batch_results(batch_query_names, batch_scores_cpu, term_names, n_terms)
 
 
 def blast_predict(annot_file, query_file, indices, graph, add_graph,
-                 blast_results, output_baseline, config_path=None, keep_self_hits=False, use_rscore=False, n_terms=None):
+                 blast_results, output_baseline, config_path=None, keep_self_hits=False,
+                 use_rscore=False, n_terms=None, batch_size=1000):
     """Make predictions for query sequences based on BLAST hits."""
-    # Load annotation matrix from appropriate source
+
     if '.gaf' in annot_file or '.dat' in annot_file:
         if not graph:
             print("Please provide a graph file for GAF or DAT input")
             sys.exit(1)
-        print("Loading annotations from GAF or DAT file")
         import yaml
         with open(config_path, 'r') as f:
             config = yaml.safe_load(f)
@@ -239,20 +227,18 @@ def blast_predict(annot_file, query_file, indices, graph, add_graph,
         wrapper_retrieve_terms(
             annot_file=annot_file,
             go_codes=GO_CODES,
-            selected_go_codes='Experimental,IC,TAS', # only use non-experimental terms
+            selected_go_codes='Experimental,IC,TAS',
             graph=graph,
-            # add_graph=add_graph, # maybe don't need to filter comparable with t-1
-            output_tsv=f'{os.path.dirname(output_baseline)}/blast_terms.tsv' # just a temporary file
+            output_tsv=f'{os.path.dirname(output_baseline)}/blast_terms.tsv'
         )
         terms_df = pd.read_csv(
-            f'{os.path.dirname(output_baseline)}/blast_terms.tsv', 
-            sep='\t', header=0, 
+            f'{os.path.dirname(output_baseline)}/blast_terms.tsv',
+            sep='\t', header=0,
             names=['EntryID', 'term', 'aspect']
         )
         annotation_mat, proteins, terms, _ = sparse_matrix_and_indices(terms_df)
         os.remove(f'{os.path.dirname(output_baseline)}/blast_terms.tsv')
     elif '.tsv' in annot_file:
-        print("Loading annotations from TSV file")
         terms_df = pd.read_csv(annot_file, sep='\t', header=0)
         if terms_df.shape[1] != 3:
             print("Invalid TSV format. Expected 3 columns: EntryID, term, aspect.")
@@ -268,8 +254,10 @@ def blast_predict(annot_file, query_file, indices, graph, add_graph,
     else:
         print("Invalid annotation file format")
         sys.exit(1)
-        
-    # Load query IDs
+
+    print(f"Annotation matrix shape: {annotation_mat.shape}")
+    print(f"Number of proteins: {len(proteins)} | Number of terms: {len(terms)}")
+
     query_ids = []
     if query_file.endswith('.fasta'):
         print("Reading query IDs from FASTA file")
@@ -284,130 +272,153 @@ def blast_predict(annot_file, query_file, indices, graph, add_graph,
     else:
         print("Please provide a fasta file or a text file with query IDs")
         sys.exit(1)
-    
-    print(f"Loaded {len(query_ids)} query IDs")
-    
-    # Load BLAST results
-    print(f"Loading BLAST results from {blast_results}")
-    blast_df = pd.read_csv(
-        blast_results, 
-        sep='\t', 
-        header=None,
-        names=['qseqid', 'sseqid', 'evalue', 'length', 'pident', 'nident']
-    )
-    
-    # Process BLAST data
-    blast_df['qseqid_acc'] = blast_df['qseqid'].apply(lambda x: x.split('|')[1] if "|" in x else x)
-    blast_df['sseqid_acc'] = blast_df['sseqid'].apply(lambda x: x.split('|')[1] if "|" in x else x)
-    
-    # Remove self-hits if needed
-    if not keep_self_hits:
-        blast_df = blast_df[blast_df['sseqid_acc'] != blast_df['qseqid_acc']]
 
-    # Filter to only queries we care about
-    blast_df = blast_df[blast_df['qseqid_acc'].isin(query_ids)]
-    
-    blast_data_dict = preprocess_blast_data(blast_df, set(proteins.keys()))
-    
-    del blast_df
-    
-    # Create a subset of query IDs that have hits
-    # proteins_with_hits = set(blast_df['qseqid_acc'])
-    effective_queries = [qid for qid in query_ids if qid in blast_data_dict]
-    
+    print(f"Loaded {len(query_ids)} query IDs")
+
+    query_set = set(query_ids)
+    query_order = {qid: idx for idx, qid in enumerate(query_ids)}
+    chunksize = 1_000_000
+
+    estimated_buckets = max(1, len(query_ids) // max(batch_size, 1)) * 4
+    num_buckets = min(4096, max(1, estimated_buckets))
+    query_to_bucket = {qid: hash(qid) % num_buckets for qid in query_ids}
+
+    print(f"Partitioning BLAST hits from {blast_results} into {num_buckets} buckets (single pass)...")
+    temp_dir, bucket_paths, bucket_query_sets, queries_with_hits = partition_blast_hits_single_pass(
+        blast_results=blast_results,
+        query_set=query_set,
+        query_to_bucket=query_to_bucket,
+        keep_self_hits=keep_self_hits,
+        chunksize=chunksize,
+        num_buckets=num_buckets,
+    )
+
+    effective_queries = [qid for qid in query_ids if qid in queries_with_hits]
     print(f"Processing {len(effective_queries)} query sequences with BLAST hits")
-    
-    # Pre-group the blast results by query ID
-    # print("Grouping BLAST results by query ID...")
-    # blast_groups = dict(tuple(blast_df.groupby('qseqid_acc')))
-    
-    # Determine number of processes
-    # num_processes = min(int(os.environ.get('SLURM_CPUS_PER_TASK', multiprocessing.cpu_count())) - 1, 16)
-    # num_processes = max(1, num_processes)
-    num_processes = min(int(os.environ.get('NUM_THREADS', multiprocessing.cpu_count())), 8)
-    print(f"Using {num_processes} processes for parallel computation")
-    
-    # Create temporary directory for output chunks
-    temp_dir = tempfile.mkdtemp(dir=os.path.dirname(output_baseline))
-    
-    # Prepare worker data
-    worker_static_data = (blast_data_dict, annotation_mat, proteins, terms, use_rscore, n_terms)
-    
-    # Create chunks of query IDs for better memory management
-    chunk_size = max(100, len(effective_queries) // (num_processes * 4))
-    query_chunks = [effective_queries[i:i+chunk_size] for i in range(0, len(effective_queries), chunk_size)]
-    tasks = [(chunk, worker_static_data) for chunk in query_chunks]
-    
-    print(f"Split processing into {len(tasks)} chunks of approximately {chunk_size} queries each")
-    
-    # Process chunks in parallel and write results to temporary files
-    # TODO: still stuck at chunking with full data
-    temp_files = []
+    if not effective_queries:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+        print("No BLAST hits available for the provided queries.")
+        return
+
+    term_names = [None] * len(terms)
+    for term, idx in terms.items():
+        term_names[idx] = term
+
+    annotation_mat_gpu = None
+    if GPU_AVAILABLE:
+        print("Transferring annotation matrix to GPU...")
+        annotation_mat_gpu = cp_sparse.csr_matrix(annotation_mat, dtype=cp_gpu.float32)
+    else:
+        print("GPU not available, proceeding with CPU computation.")
+
+    output_dir = os.path.dirname(output_baseline)
+    if output_dir and not os.path.exists(output_dir):
+        os.makedirs(output_dir, exist_ok=True)
+
+    open_func = gzip.open if output_baseline.endswith('.gz') else open
+    total_batches = sum(
+        (len(bucket_query_sets[idx]) + batch_size - 1) // batch_size
+        for idx in range(num_buckets)
+    )
+    progress = tqdm(total=total_batches, desc="Processing batches") if total_batches else None
+
     try:
-        with multiprocessing.Pool(processes=num_processes) as pool:
-            with tqdm(total=len(tasks), desc="Processing query chunks") as pbar:
-                for i, results in enumerate(pool.imap_unordered(process_query_chunk_optimized, tasks)):
-                    if results:
-                        # Write chunk results to temporary file
-                        temp_file = os.path.join(temp_dir, f"chunk_{i}.tsv")
-                        with open(temp_file, 'w', newline='') as f:
-                            writer = csv.writer(f, delimiter='\t')
-                            writer.writerows(results)
-                        temp_files.append(temp_file)
-                    pbar.update(1)
-        
-        # Create output directory if needed
-        output_dir = os.path.dirname(output_baseline)
-        if output_dir and not os.path.exists(output_dir):
-            os.makedirs(output_dir)
-            
-        # Merge temporary files into final gzipped output
-        print(f"Merging results into final output file: {output_baseline}")
-        open_func = gzip.open if output_baseline.endswith('.gz') else open
         with open_func(output_baseline, 'wt', newline='') as outfile:
-            for temp_file in temp_files:
-                with open(temp_file, 'r') as infile:
-                    outfile.write(infile.read())
-                # os.remove(temp_file)
-    
-    except Exception as e:
-        print(f"Error during processing: {e}")
-        import traceback
-        traceback.print_exc()
-        sys.exit(1)
+            writer = csv.writer(outfile, delimiter='\t')
+
+            for bucket_idx, bucket_path in enumerate(bucket_paths):
+                if not os.path.exists(bucket_path):
+                    continue
+                bucket_queries = bucket_query_sets[bucket_idx]
+                if not bucket_queries:
+                    continue
+                bucket_df = pd.read_csv(
+                    bucket_path,
+                    sep='\t',
+                    dtype={'evalue': np.float64, 'pident': np.float32},
+                )
+
+                sorted_queries = sorted(
+                    bucket_queries,
+                    key=lambda qid: query_order.get(qid, sys.maxsize)
+                )
+
+                for batch_query_names in chunk_list(sorted_queries, batch_size):
+                    batch_hits_df = bucket_df[bucket_df['qseqid_acc'].isin(batch_query_names)]
+                    if batch_hits_df.empty:
+                        if progress:
+                            progress.update(1)
+                        continue
+
+                    if GPU_AVAILABLE and annotation_mat_gpu is not None:
+                        batch_results = process_query_batch_gpu(
+                            batch_query_names,
+                            batch_hits_df,
+                            annotation_mat_gpu,
+                            proteins,
+                            term_names,
+                            use_rscore,
+                            n_terms,
+                        )
+                    else:
+                        batch_results = process_query_batch_cpu(
+                            batch_query_names,
+                            batch_hits_df,
+                            annotation_mat,
+                            proteins,
+                            term_names,
+                            use_rscore,
+                            n_terms,
+                        )
+
+                    if batch_results:
+                        writer.writerows(batch_results)
+
+                    if progress:
+                        progress.update(1)
+
+                del bucket_df
     finally:
-        # Clean up temporary files and directory
-        for temp_file in temp_files:
-            if os.path.exists(temp_file):
-                os.remove(temp_file)
-        if os.path.exists(temp_dir):
-            os.rmdir(temp_dir)
-    
+        if progress:
+            progress.close()
+        shutil.rmtree(temp_dir, ignore_errors=True)
+
     print("Prediction completed successfully")
-    return
+    if GPU_AVAILABLE and annotation_mat_gpu is not None:
+        mempool = cp_gpu.get_default_memory_pool()
+        print(f"GPU memory used: {mempool.used_bytes() / 1e9:.2f} GB")
+        print(f"GPU memory total: {mempool.total_bytes() / 1e9:.2f} GB")
 
 
 def parse_args(argv):
     parser = argparse.ArgumentParser(description='BLAST sequence similarity baseline')
-    parser.add_argument('--annot_file', '-a', 
-                        help='Path to the propagated annotation sparse matrix or a .gaf or .dat file', required=True)
-    parser.add_argument('--indices', '-i', 
-                        help='Path to the term & protein indices file', required=False, default=None)
-    parser.add_argument('--graph', help='Path to OBO file for GO graph', required=False, default=None)
-    parser.add_argument('--add_graph',help='Path to additional OBO file for GO graph at a later time point', 
+    parser.add_argument('--annot_file', '-a',
+                        help='Path to the propagated annotation sparse matrix or a .gaf or .dat file',
+                        required=True)
+    parser.add_argument('--indices', '-i',
+                        help='Path to the term & protein indices file',
                         required=False, default=None)
-    parser.add_argument('--query_file', '-q', 
-                        help='FASTA file or text file containing query IDs', required=True)
+    parser.add_argument('--graph', help='Path to OBO file for GO graph',
+                        required=False, default=None)
+    parser.add_argument('--add_graph', help='Path to additional OBO file',
+                        required=False, default=None)
+    parser.add_argument('--query_file', '-q',
+                        help='FASTA file or text file containing query IDs',
+                        required=True)
     parser.add_argument('--blast_results', '-b',
-                        help='Path to the BLAST results file', required=True)
-    parser.add_argument('--output_baseline', '-o', 
-                        help='Path to the output file', required=True)
+                        help='Path to the BLAST results file',
+                        required=True)
+    parser.add_argument('--output_baseline', '-o',
+                        help='Path to the output file',
+                        required=True)
     parser.add_argument('--use_rscore', action='store_true',
                         help='Use R-score instead of sequence identity for weighting')
     parser.add_argument('--keep_self_hits', action='store_true',
                         help='Keep self-hits in BLAST results')
     parser.add_argument('--n_terms', '-n', type=int, required=False,
                         help='Upper limit for number of terms per target', default=None)
+    parser.add_argument('--batch_size', type=int, default=1000,
+                        help='Number of queries to process per batch (default: 1000)')
     return parser.parse_args(argv)
 
 
@@ -424,7 +435,8 @@ def main():
         config_path=os.path.join(os.path.dirname(__file__), 'config.yaml'),
         keep_self_hits=args.keep_self_hits,
         use_rscore=args.use_rscore,
-        n_terms=args.n_terms
+        n_terms=args.n_terms,
+        batch_size=args.batch_size,
     )
 
 
