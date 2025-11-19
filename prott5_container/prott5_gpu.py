@@ -101,7 +101,7 @@ def process_query_batch_gpu(batch_query_names, batch_hits_df, annotation_mat_gpu
             top_idx = top_idx[np.argsort(row[top_idx])[::-1]]
         else:
             top_idx = nz_terms
-        for term_idx in nz_terms:
+        for term_idx in top_idx:
             results.append([qid, term_names[term_idx], float(row[term_idx])])
 
     return results

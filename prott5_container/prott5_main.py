@@ -127,7 +127,7 @@ def main():
     
     try:
         # If ProtT5 results file (normalized) is provided, use it directly
-        if args.prott5_results:
+        if args.prott5_results and os.path.exists(args.prott5_results):
             prott5_results_norm = args.prott5_results
             print(f"Step 1: Using provided ProtT5 results: {prott5_results_norm}")
         else:
@@ -148,11 +148,14 @@ def main():
                 num_threads=args.num_threads
             )
         
-        # Check if normalized file was created
-        if not os.path.exists(prott5_results_norm):
-            print(f"Error: Normalized ProtT5 results file not found: {prott5_results_norm}")
-            sys.exit(1)
-        
+            # Check if normalized file was created successfully
+            if not os.path.exists(prott5_results_norm):
+                print(f"Error: Normalized ProtT5 results file not found: {prott5_results_norm}")
+                sys.exit(1)
+            # Clean up raw results file if it exists
+            if os.path.exists(prott5_results_raw):
+                os.unlink(prott5_results_raw)
+
         # Step 2: Run prott5_chunks.py for predictions
         print("Step 2: Generating predictions from ProtT5 similarity results...")
         
@@ -196,10 +199,7 @@ def main():
         import traceback
         traceback.print_exc()
         sys.exit(1)
-    finally:
-        # Clean up temporary ProtT5 results files
-        if os.path.exists(prott5_results_raw):
-            os.unlink(prott5_results_raw)
+    # finally:
         # if os.path.exists(prott5_results_norm):
         #     os.unlink(prott5_results_norm)
 
