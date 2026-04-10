@@ -12,14 +12,11 @@ This script can be run from command line with arguments, or imported as a module
 """
 
 
-import os
 import sys
 import argparse
 import gzip
 import obonet
 import pandas as pd
-import networkx as nx
-import numpy as np
 from Bio.UniProt import GOA
 from Bio import SwissProt as sp
 from ontology import clean_ontology_edges, filter_terms_given_obo, replace_alternate_GO_terms
@@ -144,7 +141,7 @@ def wrapper_retrieve_terms(annot_file, go_codes, selected_go_codes, graph, add_g
     obsolete_terms = set(annotation_df['term']) - set(ontology_graph.nodes())
     if obsolete_terms:
         print(f"Warning: {len(obsolete_terms)} obsolete terms ({obsolete_terms}) found in the annotation file.")
-        print(f"These terms will not appear in terms file.")
+        print("These terms will not appear in terms file.")
         annotation_df = annotation_df[~annotation_df['term'].isin(obsolete_terms)]
     
     # Remove terms that are not in the frozen graph in 3 steps 

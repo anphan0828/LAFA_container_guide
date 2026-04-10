@@ -27,6 +27,6 @@ COPY run_blast.sh .
 RUN chmod +x run_blast.sh
 
 # Set environment variable for thread count
-ENV NUM_THREADS=8
+ENV NUM_THREADS=4
 
 ENTRYPOINT ["python3", "blast_main.py"]
