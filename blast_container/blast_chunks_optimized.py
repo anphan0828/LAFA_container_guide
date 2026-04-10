@@ -8,6 +8,7 @@ import gzip
 import shutil
 import tempfile
 import argparse
+from concurrent.futures import ThreadPoolExecutor
 import numpy as np
 import pandas as pd
 from scipy import sparse
@@ -42,6 +43,10 @@ def calculate_rscore_array(evalues, max_rscore=500.0):
 def chunk_list(items, chunk_size):
     for i in range(0, len(items), chunk_size):
         yield items[i:i + chunk_size]
+
+
+def output_dir_for(path):
+    return os.path.dirname(path) or '.'
 
 
 def partition_blast_hits_single_pass(blast_results, query_set, query_to_bucket,
@@ -100,23 +105,39 @@ def partition_blast_hits_single_pass(blast_results, query_set, query_to_bucket,
     return temp_dir, bucket_paths, bucket_query_sets, queries_with_hits
 
 
-def prepare_batch_arrays(batch_hits_df, proteins, batch_query_to_local, use_rscore):
-    """Return per-hit arrays for GPU/CPU aggregation."""
+def prepare_hit_arrays(batch_hits_df, proteins, batch_query_to_local, use_rscore):
+    """Return per-hit arrays after deduplicating repeated query-subject pairs."""
 
     if batch_hits_df.empty:
         return None
-
-    batch_hits_df = batch_hits_df.sort_values(
-        by=['qseqid_acc', 'evalue'], ascending=[True, True], kind='mergesort'
-    )
-    batch_hits_df = batch_hits_df.drop_duplicates(
-        subset=['qseqid_acc', 'sseqid_acc'], keep='first'
-    )
 
     batch_hits_df['protein_idx'] = batch_hits_df['sseqid_acc'].map(proteins)
     batch_hits_df = batch_hits_df.dropna(subset=['protein_idx'])
     if batch_hits_df.empty:
         return None
+
+    if use_rscore:
+        batch_hits_df['weight'] = calculate_rscore_array(
+            batch_hits_df['evalue'].to_numpy(dtype=np.float64, copy=False)
+        )
+    else:
+        batch_hits_df['weight'] = (
+            batch_hits_df['pident'].to_numpy(dtype=np.float32, copy=False) / 100.0
+        )
+
+    batch_hits_df = batch_hits_df[batch_hits_df['weight'] > 0]
+    if batch_hits_df.empty:
+        return None
+
+    batch_hits_df = batch_hits_df.sort_values(
+        by=['qseqid_acc', 'sseqid_acc', 'weight', 'evalue', 'pident'],
+        ascending=[True, True, False, True, False],
+        kind='mergesort',
+    )
+    batch_hits_df = batch_hits_df.drop_duplicates(
+        subset=['qseqid_acc', 'sseqid_acc'],
+        keep='first',
+    )
 
     batch_hits_df['query_local_idx'] = batch_hits_df['qseqid_acc'].map(batch_query_to_local)
     batch_hits_df = batch_hits_df.dropna(subset=['query_local_idx'])
@@ -125,20 +146,12 @@ def prepare_batch_arrays(batch_hits_df, proteins, batch_query_to_local, use_rsco
 
     query_idx = batch_hits_df['query_local_idx'].to_numpy(dtype=np.int32, copy=False)
     protein_idx = batch_hits_df['protein_idx'].to_numpy(dtype=np.int32, copy=False)
-
-    if use_rscore:
-        weights = calculate_rscore_array(batch_hits_df['evalue'].to_numpy(dtype=np.float64, copy=False))
-    else:
-        weights = batch_hits_df['pident'].to_numpy(dtype=np.float32, copy=False) / 100.0
-
-    valid_mask = weights > 0
-    if not np.any(valid_mask):
-        return None
+    weights = batch_hits_df['weight'].to_numpy(dtype=np.float32, copy=False)
 
     return (
-        query_idx[valid_mask],
-        protein_idx[valid_mask],
-        weights[valid_mask].astype(np.float32, copy=False),
+        query_idx,
+        protein_idx,
+        weights,
     )
 
 
@@ -164,7 +177,7 @@ def collect_batch_results(batch_query_names, batch_scores, term_names, n_terms):
 def process_query_batch_cpu(batch_query_names, batch_hits_df, annotation_mat,
                             proteins, term_names, use_rscore, n_terms):
     batch_query_to_local = {qid: idx for idx, qid in enumerate(batch_query_names)}
-    prepared = prepare_batch_arrays(batch_hits_df, proteins, batch_query_to_local, use_rscore)
+    prepared = prepare_hit_arrays(batch_hits_df, proteins, batch_query_to_local, use_rscore)
     if prepared is None:
         return []
     query_idx, protein_idx, weights = prepared
@@ -186,7 +199,7 @@ def process_query_batch_cpu(batch_query_names, batch_hits_df, annotation_mat,
 def process_query_batch_gpu(batch_query_names, batch_hits_df, annotation_mat_gpu,
                             proteins, term_names, use_rscore, n_terms):
     batch_query_to_local = {qid: idx for idx, qid in enumerate(batch_query_names)}
-    prepared = prepare_batch_arrays(batch_hits_df, proteins, batch_query_to_local, use_rscore)
+    prepared = prepare_hit_arrays(batch_hits_df, proteins, batch_query_to_local, use_rscore)
     if prepared is None:
         return []
     query_idx, protein_idx, weights = prepared
@@ -211,10 +224,16 @@ def process_query_batch_gpu(batch_query_names, batch_hits_df, annotation_mat_gpu
     return collect_batch_results(batch_query_names, batch_scores_cpu, term_names, n_terms)
 
 
+def process_batch_cpu_task(task):
+    return process_query_batch_cpu(*task)
+
+
 def blast_predict(annot_file, query_file, indices, graph, add_graph,
                  blast_results, output_baseline, config_path=None, keep_self_hits=False,
-                 use_rscore=False, n_terms=None, batch_size=1000):
+                 use_rscore=False, n_terms=None, batch_size=1000, num_threads=4):
     """Make predictions for query sequences based on BLAST hits."""
+
+    output_dir = output_dir_for(output_baseline)
 
     if '.gaf' in annot_file or '.dat' in annot_file:
         if not graph:
@@ -229,15 +248,16 @@ def blast_predict(annot_file, query_file, indices, graph, add_graph,
             go_codes=GO_CODES,
             selected_go_codes='Experimental,IC,TAS',
             graph=graph,
-            output_tsv=f'{os.path.dirname(output_baseline)}/blast_terms.tsv'
+            output_tsv=os.path.join(output_dir, 'blast_terms.tsv')
         )
+        temp_terms_path = os.path.join(output_dir, 'blast_terms.tsv')
         terms_df = pd.read_csv(
-            f'{os.path.dirname(output_baseline)}/blast_terms.tsv',
+            temp_terms_path,
             sep='\t', header=0,
             names=['EntryID', 'term', 'aspect']
         )
         annotation_mat, proteins, terms, _ = sparse_matrix_and_indices(terms_df)
-        os.remove(f'{os.path.dirname(output_baseline)}/blast_terms.tsv')
+        os.remove(temp_terms_path)
     elif '.tsv' in annot_file:
         terms_df = pd.read_csv(annot_file, sep='\t', header=0)
         if terms_df.shape[1] != 3:
@@ -311,7 +331,6 @@ def blast_predict(annot_file, query_file, indices, graph, add_graph,
     else:
         print("GPU not available, proceeding with CPU computation.")
 
-    output_dir = os.path.dirname(output_baseline)
     if output_dir and not os.path.exists(output_dir):
         os.makedirs(output_dir, exist_ok=True)
 
@@ -343,14 +362,27 @@ def blast_predict(annot_file, query_file, indices, graph, add_graph,
                     key=lambda qid: query_order.get(qid, sys.maxsize)
                 )
 
+                batch_tasks = []
                 for batch_query_names in chunk_list(sorted_queries, batch_size):
-                    batch_hits_df = bucket_df[bucket_df['qseqid_acc'].isin(batch_query_names)]
+                    batch_hits_df = bucket_df[bucket_df['qseqid_acc'].isin(batch_query_names)].copy()
                     if batch_hits_df.empty:
                         if progress:
                             progress.update(1)
                         continue
+                    batch_tasks.append(
+                        (
+                            batch_query_names,
+                            batch_hits_df,
+                            annotation_mat,
+                            proteins,
+                            term_names,
+                            use_rscore,
+                            n_terms,
+                        )
+                    )
 
-                    if GPU_AVAILABLE and annotation_mat_gpu is not None:
+                if GPU_AVAILABLE and annotation_mat_gpu is not None:
+                    for batch_query_names, batch_hits_df, *_ in batch_tasks:
                         batch_results = process_query_batch_gpu(
                             batch_query_names,
                             batch_hits_df,
@@ -360,22 +392,25 @@ def blast_predict(annot_file, query_file, indices, graph, add_graph,
                             use_rscore,
                             n_terms,
                         )
-                    else:
-                        batch_results = process_query_batch_cpu(
-                            batch_query_names,
-                            batch_hits_df,
-                            annotation_mat,
-                            proteins,
-                            term_names,
-                            use_rscore,
-                            n_terms,
-                        )
-
-                    if batch_results:
-                        writer.writerows(batch_results)
-
-                    if progress:
-                        progress.update(1)
+                        if batch_results:
+                            writer.writerows(batch_results)
+                        if progress:
+                            progress.update(1)
+                elif num_threads > 1 and len(batch_tasks) > 1:
+                    max_workers = min(num_threads, len(batch_tasks))
+                    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                        for batch_results in executor.map(process_batch_cpu_task, batch_tasks):
+                            if batch_results:
+                                writer.writerows(batch_results)
+                            if progress:
+                                progress.update(1)
+                else:
+                    for task in batch_tasks:
+                        batch_results = process_batch_cpu_task(task)
+                        if batch_results:
+                            writer.writerows(batch_results)
+                        if progress:
+                            progress.update(1)
 
                 del bucket_df
     finally:
@@ -419,11 +454,15 @@ def parse_args(argv):
                         help='Upper limit for number of terms per target', default=None)
     parser.add_argument('--batch_size', type=int, default=1000,
                         help='Number of queries to process per batch (default: 1000)')
+    parser.add_argument('--num_threads', type=int, default=4,
+                        help='Number of CPU threads for batch processing (default: 4)')
     return parser.parse_args(argv)
 
 
 def main():
     args = parse_args(sys.argv[1:])
+    if args.num_threads < 1:
+        raise SystemExit('--num_threads must be a positive integer')
     blast_predict(
         annot_file=args.annot_file,
         query_file=args.query_file,
@@ -437,6 +476,7 @@ def main():
         use_rscore=args.use_rscore,
         n_terms=args.n_terms,
         batch_size=args.batch_size,
+        num_threads=args.num_threads,
     )
 
 

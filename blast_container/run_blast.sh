@@ -1,7 +1,7 @@
 #!/bin/bash
 
-# BLAST script for Docker container environment
-# This script runs BLAST using NCBI BLAST Docker container instead of HPC modules
+# BLAST helper for the container environment
+# Builds a local BLAST database and runs blastp inside the image
 
 set -e  # Exit on any error
 
@@ -10,7 +10,7 @@ QUERY_FILE=""
 DB_FASTA=""
 DB_TAXID=""
 OUTPUT_FILE=""
-NUM_THREADS=${NUM_THREADS:-8}
+NUM_THREADS=${NUM_THREADS:-4}
 BLAST_FORMAT="6 qseqid sseqid evalue length pident nident"
 
 # Parse command line arguments
@@ -44,13 +44,13 @@ while [[ $# -gt 0 ]]; do
 done
 
 # Validate required arguments
-if [[ -z "$QUERY_FILE" || -z "$DB_FASTA" || -z "$DB_TAXID" || -z "$OUTPUT_FILE" ]]; then
-    echo "Usage: $0 --query <query_fasta> --database <database_fasta> --taxid <taxid> --output <output_file> [--threads <num_threads>]"
+if [[ -z "$QUERY_FILE" || -z "$DB_FASTA" || -z "$OUTPUT_FILE" ]]; then
+    echo "Usage: $0 --query <query_fasta> --database <database_fasta> --output <output_file> [--taxid <taxid_map>] [--threads <num_threads>]"
     echo "  --query: FASTA file containing query sequences"
     echo "  --database: FASTA file to use as BLAST database"
-    echo "  --taxid: Taxonomy ID file for the BLAST database"
+    echo "  --taxid: Optional taxonomy ID map for the BLAST database"
     echo "  --output: Output file for BLAST results"
-    echo "  --threads: Number of threads to use (default: 8)"
+    echo "  --threads: Number of threads to use (default: 4)"
     exit 1
 fi
 
@@ -65,7 +65,7 @@ if [[ ! -f "$DB_FASTA" ]]; then
     exit 1
 fi
 
-if [[ ! -f "$DB_TAXID" ]]; then
+if [[ -n "$DB_TAXID" && ! -f "$DB_TAXID" ]]; then
     echo "Error: Taxonomy ID file '$DB_TAXID' not found"
     exit 1
 fi
@@ -73,7 +73,11 @@ fi
 echo "Starting BLAST analysis..."
 echo "Query file: $QUERY_FILE"
 echo "Database file: $DB_FASTA"
-echo "Taxonomy ID file: $DB_TAXID"
+if [[ -n "$DB_TAXID" ]]; then
+    echo "Taxonomy ID file: $DB_TAXID"
+else
+    echo "Taxonomy ID file: not provided"
+fi
 echo "Output file: $OUTPUT_FILE"
 echo "Threads: $NUM_THREADS"
 
@@ -87,45 +91,23 @@ if command -v makeblastdb >/dev/null 2>&1 && command -v blastp >/dev/null 2>&1; 
     
     # Build BLAST database
     echo "Building BLAST database..."
-    makeblastdb -in "$DB_FASTA" -parse_seqids -blastdb_version 5 -taxid_map "$DB_TAXID" -title 'blast_db' -dbtype prot
+    MAKEBLASTDB_CMD=(
+        makeblastdb
+        -in "$DB_FASTA"
+        -parse_seqids
+        -blastdb_version 5
+        -title 'blast_db'
+        -dbtype prot
+    )
+    if [[ -n "$DB_TAXID" ]]; then
+        MAKEBLASTDB_CMD+=(-taxid_map "$DB_TAXID")
+    fi
+    "${MAKEBLASTDB_CMD[@]}"
     
     # Run BLAST search
     echo "Running BLAST search..."
     blastp -query "$QUERY_FILE" -db "$DB_FASTA" -outfmt "$BLAST_FORMAT" -mt_mode 1 -num_threads "$NUM_THREADS" -out "$OUTPUT_FILE"
-    
-# elif command -v docker >/dev/null 2>&1; then
-#     echo "Using NCBI BLAST Docker container..."
-    
-#     # Get absolute paths for Docker volume mounting
-#     ABS_QUERY_FILE=$(realpath "$QUERY_FILE")
-#     ABS_DB_FASTA=$(realpath "$DB_FASTA")
-#     ABS_OUTPUT_FILE=$(realpath "$OUTPUT_FILE")
-    
-#     # Get the directory containing the files for volume mounting
-#     WORK_DIR=$(dirname "$ABS_QUERY_FILE")
-#     if [[ "$(dirname "$ABS_DB_FASTA")" != "$WORK_DIR" ]]; then
-#         echo "Warning: Query and database files are in different directories"
-#         echo "This may cause issues with Docker volume mounting"
-#     fi
-    
-#     # Build BLAST database using Docker
-#     echo "Building BLAST database using Docker..."
-#     docker run --rm \
-#         -v "$WORK_DIR:/blast/blastdb" \
-#         -w /blast/blastdb \
-#         ncbi/blast:latest \
-#         makeblastdb -in "$(basename "$DB_FASTA")" -parse_seqids -blastdb_version 5 -title 'blast_db' -dbtype prot
-    
-#     # Run BLAST search using Docker
-#     echo "Running BLAST search using Docker..."
-#     docker run --rm \
-#         -v "$WORK_DIR:/blast/blastdb" \
-#         -w /blast/blastdb \
-#         ncbi/blast:latest \
-#         blastp -query "$(basename "$QUERY_FILE")" -db "$(basename "$DB_FASTA")" \
-#         -outfmt "$BLAST_FORMAT" -mt_mode 1 -num_threads "$NUM_THREADS" \
-#         -out "$(basename "$OUTPUT_FILE")"
-        
+
 else
     echo "Error: Neither BLAST tools nor Docker are available"
     echo "Please install BLAST+ tools or Docker to run this script"

@@ -1,115 +1,112 @@
 # ProtT5 Container for Protein Function Prediction
 
-This Docker container implements a ProtT5-based protein function prediction pipeline. It uses ProtT5 transformer embeddings to compute sequence similarities and then uses those similarities to predict GO term annotations.
+This container implements a ProtT5-based protein function prediction baseline for CAFA-style evaluation.
 
-## Contents
+The active pipeline is:
+1. Generate mean-pooled ProtT5 embeddings for the query proteins.
+2. Generate mean-pooled ProtT5 embeddings for the training proteins.
+3. Compute top-k nearest training neighbors for each query in embedding space using Euclidean distance.
+4. Retain only those top-k raw distances per query.
+5. Normalize the retained distances into percentage similarity scores using the maximum distance across the retained rows.
+6. Transfer GO terms from all annotated ProtT5 hits to each query.
+7. Keep each GO term score as the maximum transferred score across hits, matching the BLAST container transfer rule.
 
-- `prott5_main.py` - Main orchestration script
-- `run_prott5.sh` - Part 1 wrapper of ProtT5 execution script
-- `prott5_embedder.py` - ProtT5 embedding generation script for database set and query set
-- `process_embeddings_gpu.py` - Similarity calculation from embeddings
-- `normalize_embeddings.py` - Similarity score normalization
-- `prott5_chunks.py` - Part 2 wrapper of ProtT5-based prediction algorithm (using chunk strategy)
-- `retrieve_terms.py` - GO term retrieval from gzipped GAF file
-- `ontology.py` - Ontology processing utilities
-- `config.yaml` - GO evidence code configuration
-- `requirements.txt` - Python dependencies
-- `Dockerfile` - Container definition
+Repeated query-subject rows are deduplicated before transfer, keeping the strongest ProtT5 similarity for that pair.
 
-## How It Works
-`prott5_main.py` orchestrates two parts of the method. 
+## Active Files
 
-Part 1 (wrapped in `run_prott5.sh` script) includes steps 1-3 below:
-1. **ProtT5 Embeddings**: The container first generates ProtT5 transformer embeddings for both query and database (training) sequences
-2. **Similarity Calculation**: Computes euclidean distances between each query to every database embedding
-3. **Score Normalization**: Normalizes similarity scores to percentages, which will be used as confidence score to transfer GO annotations from database sequences to query sequences
+- `prott5_main.py`: container entrypoint and pipeline orchestration
+- `run_prott5.sh`: wrapper that generates embeddings and similarity tables
+- `prott5_embedder.py`: ProtT5 embedding generation for FASTA inputs
+- `process_embeddings_gpu_optimized.py`: nearest-neighbor search and distance normalization
+- `prott5_gpu.py`: active annotation-transfer predictor
+- `retrieve_terms.py`: annotation extraction utilities
+- `ontology.py`: annotation matrix construction utilities
+- `config.yaml`: GO evidence-code groups
+- `requirements2.txt`: active Docker dependency list
+- `Dockerfile`: container definition
 
-Part 2 (wrapped in `prott5_chunks.py` script) includes steps 4-6:
+## Cleanup Candidates
 
-4. **Annotation Loading**: Loads GO term annotations from the provided annotation file
-5. **Prediction**: Uses similarity scores and annotations to generate GO term predictions for query sequences
-6. **Output**: Saves predictions in TSV format with columns (without header): [protein_id, go_term, score]
+- `prott5_chunks.py`: older CPU-side prediction path; no longer imported by `prott5_main.py` or copied by the Dockerfile
+- `requirements.txt`: not used by the Dockerfile; `requirements2.txt` is the active dependency file
 
-
-## Building the Container
-The container should be built after all scripts have been generated/collected. 
+## Build
 
 ```bash
-# From the prott5_container directory
-docker build -t prott5_predictor .
+docker build -t prott5_predictor democafa/baselines/prott5_container
 ```
 
-## Running the Container
+## Run
 
-### Basic Usage with Test Data
+### Generate ProtT5 similarities inside the container
 
 ```bash
 docker run --rm \
-  -v /path/to/test_data:/app/data \
-  -v /path/to/test_output:/app/output \
+  -v /path/to/data:/app/data \
+  -v /path/to/output:/app/output \
+  -v /path/to/cache:/app/.cache \
   prott5_predictor \
-  --annot_file /app/data/annotations.gaf.gz \
+  --annot_file /app/data/train_terms.tsv \
   --query_file /app/data/test_sequences.fasta \
   --train_sequences /app/data/train_sequences.fasta \
   --graph /app/data/go-basic.obo \
   --output_baseline /app/output/prott5_predictions.tsv.gz
 ```
 
-### Required Arguments
-
-- `--annot_file`: Path to annotation file (.gaf/.dat or .npz sparse matrix)
-- `--query_file`: FASTA file containing query sequences to predict
-- `--train_sequences`: FASTA file containing training sequences (for similarity database)
-- `--graph`: Path to GO ontology file (.obo format)
-- `--output_baseline`: Path to output predictions file
-
-### Optional Arguments
-
-- `--indices`: Path to term indices file (required when using .npz annotation files)
-- `--add_graph`: Path to additional OBO file for temporal filtering
-- `--model_dir`: Path to HuggingFace model cache directory (default: /app/.cache/huggingface/)
-- `--keep_self_hits`: Keep self-hits in similarity results
-- `--num_threads`: Number of threads (default: 8)
-
-### Running with Model Caching
-
-For better performance and to avoid re-downloading models, you can create a local directory for caching model and then mount this cache directory to the container `/app/.cache`:
+### Reuse an existing ProtT5 similarity table
 
 ```bash
-# Create a local cache directory
-mkdir -p /home/user/.cache/huggingface
-
-# Run with mounted cache
 docker run --rm \
   -v /path/to/data:/app/data \
   -v /path/to/output:/app/output \
-  -v /home/user/.cache:/app/.cache \
   prott5_predictor \
-  [arguments...]
+  --annot_file /app/data/train_terms.tsv \
+  --query_file /app/data/test_sequences.fasta \
+  --graph /app/data/go-basic.obo \
+  --prott5_results /app/data/prott5_results_norm.tsv \
+  --output_baseline /app/output/prott5_predictions.tsv.gz
 ```
 
-## GPU Requirements
+## Arguments
 
-- **Recommended**: TBD
-- **Minimum**: TBD
-- **CPU fallback**: Will run on CPU but significantly slower
+### Required
 
-## Model Information
+- `--annot_file`: training annotations as `.tsv`, `.gaf`, `.dat`, or propagated sparse `.npz`
+- `--query_file`: query proteins as FASTA or one ID per line text file
+- `--graph`: GO ontology `.obo`
+- `--output_baseline`: output prediction table
 
-- **Default Model**: `Rostlab/prot_t5_xl_half_uniref50-enc`
-- **Model Size**: ~2.3GB
-- **Cache Location**: `/app/.cache/huggingface/` (mountable)
-- **First Build**: Model will be downloaded automatically from HuggingFace
+### Optional
 
-## Dependencies
+- `--train_sequences`: training FASTA used to generate ProtT5 embedding neighbors; required unless `--prott5_results` already exists
+- `--prott5_results`: reuse a precomputed normalized ProtT5 similarity table
+- `--indices`: required with `.npz` annotations
+- `--add_graph`: reserved additional ontology input
+- `--model_dir`: HuggingFace cache directory; default is `$HF_CACHE` or `/app/.cache/huggingface/`
+- `--keep_self_hits`: keep self-hits instead of removing exact query-vs-subject accession matches
+- `--num_threads`: passed through to the embedding wrapper script; default `8`
+- `--top_k`: number of nearest neighbors retained per query before normalization; default `3`
+- `--n_terms`: cap the number of output terms per query
 
-- **CUDA**: 11.8+ (for GPU support)
-- **Python**: 3.8+
-- **PyTorch**: 2.0+ with CUDA support
-- **Transformers**: 4.21+ (HuggingFace)
-- **BioPython**: 1.85 (or sequence parsing)
-- **h5py**: For embedding storage
-- **scikit-learn**: For similarity calculations
-- **NetworkX and obonet**: For ontology processing
-- **SciPy**: For sparse matrix operations
-- **Pandas**: For data manipulation
+## Similarity File Format
+
+The active predictor expects the normalized ProtT5 results table produced by `run_prott5.sh`, with header columns equivalent to:
+
+```text
+Query ID    DB ID    e-val    Length    Similarity    N-ident
+```
+
+The transfer step uses the `Similarity` column as the score source and writes the final prediction file without a header:
+
+```text
+<query_protein_id>    <go_term>    <score>
+```
+
+## Notes
+
+- The active shipped prediction path is GPU-based: `prott5_main.py` calls `prott5_gpu.py` directly.
+- The Docker image uses `prott5_gpu.py` for annotation transfer, not `prott5_chunks.py`.
+- `process_embeddings_gpu_optimized.py` currently performs GPU nearest-neighbor search, truncation to `top_k`, and post-truncation normalization in the same script.
+- The image pre-downloads `Rostlab/prot_t5_xl_half_uniref50-enc` during build.
+- Mounting a persistent HuggingFace cache directory avoids repeated model downloads.

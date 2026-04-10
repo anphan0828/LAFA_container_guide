@@ -4,7 +4,7 @@ ProtT5 Container Main Script
 
 This script orchestrates the ProtT5-based protein function prediction pipeline:
 1. Runs ProtT5 to generate embeddings and compute similarities
-2. Uses similarity results to generate GO term predictions
+2. Transfers annotations from ProtT5 hits and keeps the maximum score per term
 
 Usage:
     python prott5_main.py --annot_file <annotations> --query_file <queries> --train_sequences <training> --graph <ontology> --output_baseline <output>
@@ -16,7 +16,7 @@ import argparse
 import subprocess
 from pathlib import Path
 
-def run_prott5_analysis(query_file, train_sequences, prott5_results, model_dir=None, num_threads=8):
+def run_prott5_analysis(query_file, train_sequences, prott5_results, model_dir=None, num_threads=8, top_k=3):
     """
     Run ProtT5 analysis using the run_prott5.sh script
     
@@ -26,6 +26,7 @@ def run_prott5_analysis(query_file, train_sequences, prott5_results, model_dir=N
         prott5_results: Path to output similarity results file
         model_dir: Path to HuggingFace model cache directory
         num_threads: Number of threads to use
+        top_k: Number of nearest neighbors to retain per query before normalization
     """
     
     # Get the directory of this script to find run_prott5.sh
@@ -38,7 +39,7 @@ def run_prott5_analysis(query_file, train_sequences, prott5_results, model_dir=N
     # Make sure the script is executable
     # os.chmod(prott5_script, 0o755)
     
-    print(f"Running ProtT5 analysis...")
+    print("Running ProtT5 analysis...")
     print(f"Query: {query_file}")
     print(f"Database: {train_sequences}")
     print(f"Output: {prott5_results}")
@@ -49,7 +50,8 @@ def run_prott5_analysis(query_file, train_sequences, prott5_results, model_dir=N
         "--query", query_file,
         "--database", train_sequences,
         "--output", prott5_results,
-        "--threads", str(num_threads)
+        "--threads", str(num_threads),
+        "--top_k", str(top_k),
     ]
     
     if model_dir:
@@ -77,8 +79,8 @@ def main():
                         help='Path to annotation file (.gaf or .dat) or sparse matrix (.npz)')
     parser.add_argument('--query_file', '-q', required=True,
                         help='FASTA file containing query sequences')
-    parser.add_argument('--train_sequences', required=True,
-                        help='FASTA file containing training sequences')
+    parser.add_argument('--train_sequences', required=False,
+                        help='FASTA file containing training sequences (required unless --prott5_results already exists)')
     parser.add_argument('--graph', required=True,
                         help='Path to GO ontology file (.obo)')
     parser.add_argument('--output_baseline', '-o', required=True,
@@ -99,8 +101,14 @@ def main():
                         help='Number of threads (default: 8)')
     parser.add_argument('--n_terms', type=int, default=None,
                         help='Maximum number of terms to produce predictions per target (default: None)')
+    parser.add_argument('--top_k', type=int, default=3,
+                        help='Number of nearest neighbors to retain per query before normalization (default: 3)')
     
     args = parser.parse_args()
+    if args.num_threads < 1:
+        parser.error('--num_threads must be a positive integer')
+    if args.top_k < 1:
+        parser.error('--top_k must be a positive integer')
     
     # Validate input files
     if not os.path.exists(args.annot_file):
@@ -111,7 +119,7 @@ def main():
         print(f"Error: Query file not found: {args.query_file}")
         sys.exit(1)
         
-    if not os.path.exists(args.train_sequences):
+    if args.train_sequences and not os.path.exists(args.train_sequences):
         print(f"Error: Training sequences file not found: {args.train_sequences}")
         sys.exit(1)
         
@@ -125,57 +133,39 @@ def main():
     else:
         model_dir = os.environ.get('HF_CACHE', '/app/.cache/huggingface/')
     
-    try:
-        # If ProtT5 results file (normalized) is provided, use it directly
-        if args.prott5_results and os.path.exists(args.prott5_results):
-            prott5_results_norm = args.prott5_results
-            print(f"Step 1: Using provided ProtT5 results: {prott5_results_norm}")
-        else:
-            # Create file for ProtT5 results
-            # Use normalized output since that's what prott5_chunks expects
-            prott5_results_norm = f"{os.path.dirname(args.output_baseline)}/prott5_results_norm.tsv"
+    output_dir = os.path.dirname(args.output_baseline) or '.'
+    prott5_results_norm = args.prott5_results or os.path.join(output_dir, 'prott5_results_norm.tsv')
+    need_prott5_analysis = not (args.prott5_results and os.path.exists(args.prott5_results))
 
-            # The raw results file (before normalization)
+    if need_prott5_analysis and not args.train_sequences:
+        print("Error: --train_sequences is required unless --prott5_results points to an existing similarity table")
+        sys.exit(1)
+
+    try:
+        if need_prott5_analysis:
             prott5_results_raw = prott5_results_norm.replace('_norm.tsv', '.tsv')
-        
             print("Step 1: Running ProtT5 embedding analysis...")
-            # Step 1: Run ProtT5 analysis
             run_prott5_analysis(
                 query_file=args.query_file,
                 train_sequences=args.train_sequences,
                 prott5_results=prott5_results_raw,
                 model_dir=model_dir,
-                num_threads=args.num_threads
+                num_threads=args.num_threads,
+                top_k=args.top_k,
             )
         
             # Check if normalized file was created successfully
             if not os.path.exists(prott5_results_norm):
                 print(f"Error: Normalized ProtT5 results file not found: {prott5_results_norm}")
                 sys.exit(1)
-            # Clean up raw results file if it exists
-            if os.path.exists(prott5_results_raw):
-                os.unlink(prott5_results_raw)
+            # # Clean up raw results file if it exists
+            # if os.path.exists(prott5_results_raw):
+            #     os.unlink(prott5_results_raw)
+        else:
+            print(f"Step 1: Using provided ProtT5 results: {prott5_results_norm}")
 
-        # Step 2: Run prott5_chunks.py for predictions
         print("Step 2: Generating predictions from ProtT5 similarity results...")
-        
-        # # Import and run prott5_chunks
-        # from prott5_chunks import prott5_predict
-        
-        # prott5_predict(
-        #     annot_file=args.annot_file,
-        #     query_file=args.query_file,
-        #     indices=args.indices,
-        #     graph=args.graph,
-        #     add_graph=args.add_graph,
-        #     prott5_results=prott5_results_norm,
-        #     output_baseline=args.output_baseline,
-        #     config_path=os.path.join(os.path.dirname(__file__), 'config.yaml'),
-        #     keep_self_hits=args.keep_self_hits,
-        #     num_threads=args.num_threads
-        # )
-        
-        # Testing GPU
+
         from prott5_gpu import prott5_predict_gpu
         prott5_predict_gpu(
             annot_file=args.annot_file,
@@ -188,10 +178,11 @@ def main():
             config_path=os.path.join(os.path.dirname(__file__), 'config.yaml'),
             keep_self_hits=args.keep_self_hits,
             batch_size=1000,
+            device_id=0,
             n_terms=args.n_terms
         )
         
-        print(f"ProtT5 prediction pipeline completed successfully!")
+        print("ProtT5 prediction pipeline completed successfully!")
         print(f"Results saved to: {args.output_baseline}")
         
     except Exception as e:

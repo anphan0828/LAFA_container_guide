@@ -19,7 +19,7 @@ import argparse
 from retrieve_terms import wrapper_retrieve_terms
 from ontology import sparse_matrix_and_indices, fetch_aspect
 
-def naive_predict(annot_file, query_file: str, indices, graph, add_graph, output_baseline, n_terms=None) -> pd.DataFrame:
+def naive_predict(annot_file, query_file: str, indices, graph, output_baseline, n_terms=None) -> pd.DataFrame:
     """
     Make predictions based on term frequencies in training annotations.
     
@@ -51,7 +51,6 @@ def naive_predict(annot_file, query_file: str, indices, graph, add_graph, output
             go_codes=GO_CODES,
             selected_go_codes='Experimental,IC,TAS', # only use non-experimental terms
             graph=graph,
-            # add_graph=add_graph, # maybe don't need to filter comparable with t-1
             output_tsv=f'{os.path.dirname(output_baseline)}/naive_terms.tsv' # just a temporary file
         )
         terms_df = pd.read_csv(f'{os.path.dirname(output_baseline)}/naive_terms.tsv', sep='\t', header=0, names=['EntryID', 'term', 'aspect'])
@@ -187,7 +186,6 @@ def parse_args(argv):
     parser.add_argument('--indices', '-i', 
                         help='Path to the term & protein indices file', required=False, default=None)
     parser.add_argument('--graph', help='Path to OBO file for GO graph', required=False, default=None)
-    parser.add_argument('--add_graph',help='Path to additional OBO file for GO graph at a later time point', required=False, default=None)
     parser.add_argument('--query_file', '-q', 
                         help='FASTA file or text file containing query IDs', required=True)
     parser.add_argument('--output_baseline', '-o', 
@@ -204,7 +202,6 @@ def main():
         query_file=args.query_file,
         indices=args.indices,
         graph=args.graph,
-        add_graph=args.add_graph,
         output_baseline=args.output_baseline,
         n_terms=args.n_terms
     )

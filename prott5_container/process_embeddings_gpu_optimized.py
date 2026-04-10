@@ -1,3 +1,4 @@
+import argparse
 import h5py
 from sklearn.metrics.pairwise import euclidean_distances
 from tqdm import tqdm
@@ -89,89 +90,89 @@ def normalize_embeddings_chunked(input_file, chunk_size=100000):
     print(f"Final stats: {processed_rows:,} rows processed")
     return output_file
 
-def process_embeddings_optimized(evalset_file, dbset_file, output_file, top_k=1000, batch_size=1000):
-    print(f"Started at: {time.ctime()}")
+# def process_embeddings_optimized(evalset_file, dbset_file, output_file, top_k=1000, batch_size=1000):
+#     print(f"Started at: {time.ctime()}")
     
-    # Load database embeddings efficiently
-    print("Loading database embeddings...")
-    with h5py.File(dbset_file, 'r') as db_h5:
-        db_ids = list(db_h5.keys())
-        # Load as contiguous numpy array (much faster)
-        db_embeddings = np.array([db_h5[db_id][:] for db_id in tqdm(db_ids)])
+#     # Load database embeddings efficiently
+#     print("Loading database embeddings...")
+#     with h5py.File(dbset_file, 'r') as db_h5:
+#         db_ids = list(db_h5.keys())
+#         # Load as contiguous numpy array (much faster)
+#         db_embeddings = np.array([db_h5[db_id][:] for db_id in tqdm(db_ids)])
     
-    print(f"Database shape: {db_embeddings.shape}")
+#     print(f"Database shape: {db_embeddings.shape}")
     
-    actual_top_k = min(top_k, len(db_ids))
-    if actual_top_k < top_k:
-        print(f"Warning: Database only has {len(db_ids)} proteins, using top_k={actual_top_k} instead of {top_k}")
-        top_k = actual_top_k
-    # Process queries in batches
-    print("Processing query embeddings...")
+#     actual_top_k = min(top_k, len(db_ids))
+#     if actual_top_k < top_k:
+#         print(f"Warning: Database only has {len(db_ids)} proteins, using top_k={actual_top_k} instead of {top_k}")
+#         top_k = actual_top_k
+#     # Process queries in batches
+#     print("Processing query embeddings...")
     
-    results = []
-    def safe_top_k_selection(distances, k):
-        """Safely select top-k indices, handling cases where k > len(distances)"""
-        n = len(distances)
-        if n == 0:
-            return np.array([]), np.array([])
+#     results = []
+#     def safe_top_k_selection(distances, k):
+#         """Safely select top-k indices, handling cases where k > len(distances)"""
+#         n = len(distances)
+#         if n == 0:
+#             return np.array([]), np.array([])
         
-        actual_k = min(k, n)
+#         actual_k = min(k, n)
         
-        if actual_k == n:
-            # Return all indices sorted by distance
-            indices = np.argsort(distances)
-        else:
-            # Use argpartition for efficiency
-            indices = np.argpartition(distances, actual_k)[:actual_k]
+#         if actual_k == n:
+#             # Return all indices sorted by distance
+#             indices = np.argsort(distances)
+#         else:
+#             # Use argpartition for efficiency
+#             indices = np.argpartition(distances, actual_k)[:actual_k]
         
-        return indices, distances[indices]
+#         return indices, distances[indices]
     
-    with h5py.File(evalset_file, 'r') as query_h5:
-        query_ids = list(query_h5.keys())
+#     with h5py.File(evalset_file, 'r') as query_h5:
+#         query_ids = list(query_h5.keys())
         
-        # Process in batches to manage memory
-        for batch_start in tqdm(range(0, len(query_ids), batch_size), desc="Query batches"):
-            batch_end = min(batch_start + batch_size, len(query_ids))
-            batch_query_ids = query_ids[batch_start:batch_end]
+#         # Process in batches to manage memory
+#         for batch_start in tqdm(range(0, len(query_ids), batch_size), desc="Query batches"):
+#             batch_end = min(batch_start + batch_size, len(query_ids))
+#             batch_query_ids = query_ids[batch_start:batch_end]
             
-            # Load batch of query embeddings
-            batch_queries = np.array([query_h5[qid][:] for qid in batch_query_ids])
+#             # Load batch of query embeddings
+#             batch_queries = np.array([query_h5[qid][:] for qid in batch_query_ids])
             
-            # Compute all pairwise distances for this batch
-            distances = euclidean_distances(batch_queries, db_embeddings)
+#             # Compute all pairwise distances for this batch
+#             distances = euclidean_distances(batch_queries, db_embeddings)
             
-            # Find top-k for each query in batch
-            for i, query_id in enumerate(batch_query_ids):
-                query_distances = distances[i]
+#             # Find top-k for each query in batch
+#             for i, query_id in enumerate(batch_query_ids):
+#                 query_distances = distances[i]
                 
-                top_k_indices, top_k_distances = safe_top_k_selection(query_distances, top_k)
-                top_k_db_ids = [db_ids[idx] for idx in top_k_indices]
+#                 top_k_indices, top_k_distances = safe_top_k_selection(query_distances, top_k)
+#                 top_k_db_ids = [db_ids[idx] for idx in top_k_indices]
                 
-                # Create results for this query
-                batch_results = pd.DataFrame({
-                    'Query ID': [query_id] * top_k,
-                    'DB ID': top_k_db_ids,
-                    'e-val': [0] * top_k,
-                    'Length': [0] * top_k,
-                    'Similarity': top_k_distances,
-                    'N-ident': [0] * top_k
-                })
+#                 # Create results for this query
+#                 batch_results = pd.DataFrame({
+#                     'Query ID': [query_id] * top_k,
+#                     'DB ID': top_k_db_ids,
+#                     'e-val': [0] * top_k,
+#                     'Length': [0] * top_k,
+#                     'Similarity': top_k_distances,
+#                     'N-ident': [0] * top_k
+#                 })
                 
-                results.append(batch_results)
+#                 results.append(batch_results)
     
-    # Combine all results
-    print("Combining results...")
-    final_results = pd.concat(results, ignore_index=True)
+#     # Combine all results
+#     print("Combining results...")
+#     final_results = pd.concat(results, ignore_index=True)
     
-    # Save results
-    print(f"Saving {len(final_results)} results to {output_file}")
-    final_results.to_csv(output_file, sep='\t', index=True)
+#     # Save results
+#     print(f"Saving {len(final_results)} results to {output_file}")
+#     final_results.to_csv(output_file, sep='\t', index=True)
     
-    print(f"Completed at: {time.ctime()}")
+#     print(f"Completed at: {time.ctime()}")
 
 
 
-def process_embeddings_gpu(evalset_file, dbset_file, output_file, top_k=1000, normalize=True):
+def process_embeddings_gpu(evalset_file, dbset_file, output_file, top_k=3, normalize=True):
     import cupy as cp  # GPU arrays
     from cuml.neighbors import NearestNeighbors  # GPU k-NN
     
@@ -180,7 +181,7 @@ def process_embeddings_gpu(evalset_file, dbset_file, output_file, top_k=1000, no
         db_ids = list(db_h5.keys())
         db_embeddings = cp.array([db_h5[db_id][:] for db_id in db_ids])
     
-    # Adjust top_k if database is smaller
+    # Truncation happens here: retain only the nearest top-k distances per query.
     actual_top_k = min(top_k, len(db_ids))
     if actual_top_k < top_k:
         print(f"Warning: Database only has {len(db_ids)} proteins, using top_k={actual_top_k} instead of {top_k}")
@@ -220,7 +221,7 @@ def process_embeddings_gpu(evalset_file, dbset_file, output_file, top_k=1000, no
     final_results = pd.concat(results, ignore_index=True)
     final_results.to_csv(output_file, sep='\t', index=True)
     
-    # Automatically normalize if requested
+    # Normalize only the retained top-k rows, so scores depend on the retained neighborhood distribution.
     if normalize:
         print("Starting automatic normalization...")
         normalized_file = normalize_embeddings_chunked(output_file)
@@ -228,21 +229,32 @@ def process_embeddings_gpu(evalset_file, dbset_file, output_file, top_k=1000, no
     
     return output_file
     
-        
+def parse_args(argv):
+    parser = argparse.ArgumentParser(
+        description='Compute ProtT5 embedding distances, retain top-k neighbors, and optionally normalize them.'
+    )
+    parser.add_argument('evalset_file', help='HDF5 file containing query embeddings')
+    parser.add_argument('dbset_file', help='HDF5 file containing database embeddings')
+    parser.add_argument('output_file', help='Path to raw distance output TSV')
+    parser.add_argument('--top_k', type=int, default=3,
+                        help='Number of nearest neighbors to retain per query before normalization (default: 3)')
+    parser.add_argument('--normalize', action='store_true',
+                        help='Normalize the retained distances into percentage similarity scores')
+    return parser.parse_args(argv)
+
+
 if __name__ == "__main__":
-    evalset_file = sys.argv[1]
-    dbset_file = sys.argv[2] 
-    output_file = sys.argv[3]
-    
-    # Check for optional normalize flag
-    normalize = len(sys.argv) > 4 and sys.argv[4].lower() in ['true', '1', 'yes', 'normalize']
-    
-    # Choose processing method
-    if 'gpu' in sys.argv or any('gpu' in arg.lower() for arg in sys.argv):
-        result_file = process_embeddings_gpu(evalset_file, dbset_file, output_file, normalize=normalize)
-    else:
-        # process_embeddings_optimized(evalset_file, dbset_file, output_file)
-        result_file = process_embeddings_gpu(evalset_file, dbset_file, output_file, normalize=normalize)
-    
+    args = parse_args(sys.argv[1:])
+    if args.top_k < 1:
+        raise SystemExit('--top_k must be a positive integer')
+
+    result_file = process_embeddings_gpu(
+        args.evalset_file,
+        args.dbset_file,
+        args.output_file,
+        top_k=args.top_k,
+        normalize=args.normalize,
+    )
+
     print(f"Processing completed. Final output: {result_file}")
         

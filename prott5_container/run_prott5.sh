@@ -11,6 +11,7 @@ DATABASE_FILE=""
 MODEL_DIR=${HF_CACHE:-"/app/.cache/huggingface/"}
 OUTPUT_FILE=""
 NUM_THREADS=${NUM_THREADS:-8}
+TOP_K=${TOP_K:-3}
 
 # Parse command line arguments
 while [[ $# -gt 0 ]]; do
@@ -35,6 +36,10 @@ while [[ $# -gt 0 ]]; do
             NUM_THREADS="$2"
             shift 2
             ;;
+        --top_k)
+            TOP_K="$2"
+            shift 2
+            ;;
         *)
             echo "Unknown option: $1"
             exit 1
@@ -44,12 +49,18 @@ done
 
 # Validate required arguments
 if [[ -z "$QUERY_FILE" || -z "$DATABASE_FILE" || -z "$OUTPUT_FILE" ]]; then
-    echo "Usage: $0 --query <query_fasta> --database <database_fasta> --output <output_file> [--model <model_dir>] [--threads <num_threads>]"
+    echo "Usage: $0 --query <query_fasta> --database <database_fasta> --output <output_file> [--model <model_dir>] [--threads <num_threads>] [--top_k <neighbors>]"
     echo "  --query: FASTA file containing query sequences"
     echo "  --database: FASTA file containing database sequences"
     echo "  --output: Output file for similarity results"
     echo "  --model: Directory for HuggingFace model cache (default: \$HF_CACHE or /app/.cache/huggingface/)"
     echo "  --threads: Number of threads to use (default: 8)"
+    echo "  --top_k: Number of nearest neighbors to retain per query before normalization (default: 3)"
+    exit 1
+fi
+
+if ! [[ "$TOP_K" =~ ^[1-9][0-9]*$ ]]; then
+    echo "Error: --top_k must be a positive integer"
     exit 1
 fi
 
@@ -70,6 +81,7 @@ echo "Database file: $DATABASE_FILE"
 echo "Output file: $OUTPUT_FILE"
 echo "Model cache directory: $MODEL_DIR"
 echo "Threads: $NUM_THREADS"
+echo "Top-k neighbors: $TOP_K"
 
 # Create output directory if it doesn't exist
 OUTPUT_DIR=$(dirname "$OUTPUT_FILE")
@@ -95,7 +107,7 @@ python3 prott5_embedder.py --input "$DATABASE_FILE" --output "$DBSET_EMBEDDINGS"
 
 echo "Step 3: Computing similarity matrix and processing embeddings..."
 # python3 process_embeddings_gpu.py "$EVALSET_EMBEDDINGS" "$DBSET_EMBEDDINGS" "$OUTPUT_FILE"
-python3 process_embeddings_gpu_optimized.py "$EVALSET_EMBEDDINGS" "$DBSET_EMBEDDINGS" "$OUTPUT_FILE" "normalize"
+python3 process_embeddings_gpu_optimized.py "$EVALSET_EMBEDDINGS" "$DBSET_EMBEDDINGS" "$OUTPUT_FILE" --top_k "$TOP_K" --normalize
 
 #echo "Step 4: Normalizing similarity scores..."
 #python3 normalize_embeddings.py "$OUTPUT_FILE"

@@ -1,7 +1,5 @@
 #!/usr/bin/env python3
 
-import sys
-import argparse
 import logging
 import obonet
 import numpy as np

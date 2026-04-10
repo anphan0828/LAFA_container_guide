@@ -29,9 +29,13 @@ except ImportError:
     print("Warning: CuPy not available. GPU acceleration will not be used.")
 
 
+def output_dir_for(path):
+    return os.path.dirname(path) or '.'
+
+
 def process_query_batch_gpu(batch_query_names, batch_hits_df, annotation_mat_gpu,
                             proteins, term_names, n_terms=None):
-    """Process a batch of queries on the GPU using a single aggregation step."""
+    """Process a batch of queries on the GPU using max-per-term aggregation."""
 
     if batch_hits_df.empty:
         return []
@@ -39,7 +43,9 @@ def process_query_batch_gpu(batch_query_names, batch_hits_df, annotation_mat_gpu
     batch_query_to_local = {qid: idx for idx, qid in enumerate(batch_query_names)}
 
     batch_hits_df = batch_hits_df.sort_values(
-        by=['qseqid_acc', 'evalue'], ascending=[True, True], kind='mergesort'
+        by=['qseqid_acc', 'sseqid_acc', 'similarity', 'evalue'],
+        ascending=[True, True, False, True],
+        kind='mergesort',
     )
     batch_hits_df = batch_hits_df.drop_duplicates(
         subset=['qseqid_acc', 'sseqid_acc'], keep='first'
@@ -195,6 +201,7 @@ def prott5_predict_gpu(annot_file, query_file, indices, graph, add_graph,
     # Set GPU device
     cp_gpu.cuda.Device(device_id).use()
     print(f"Using GPU device {device_id}: {cp_gpu.cuda.Device(device_id).compute_capability}")
+    output_dir = output_dir_for(output_baseline)
     
     # Load annotations
     print("Loading annotations...")
@@ -212,15 +219,16 @@ def prott5_predict_gpu(annot_file, query_file, indices, graph, add_graph,
             go_codes=GO_CODES,
             selected_go_codes='Experimental,IC,TAS',
             graph=graph,
-            output_tsv=f'{os.path.dirname(output_baseline)}/prott5_terms.tsv'
+            output_tsv=os.path.join(output_dir, 'prott5_terms.tsv')
         )
+        temp_terms_path = os.path.join(output_dir, 'prott5_terms.tsv')
         terms_df = pd.read_csv(
-            f'{os.path.dirname(output_baseline)}/prott5_terms.tsv',
+            temp_terms_path,
             sep='\t', header=0,
             names=['EntryID', 'term', 'aspect']
         )
         annotation_mat, proteins, terms, _ = sparse_matrix_and_indices(terms_df)
-        os.remove(f'{os.path.dirname(output_baseline)}/prott5_terms.tsv')
+        os.remove(temp_terms_path)
     elif '.tsv' in annot_file:
         terms_df = pd.read_csv(annot_file, sep='\t', header=0)
         if terms_df.shape[1] != 3:
@@ -293,9 +301,8 @@ def prott5_predict_gpu(annot_file, query_file, indices, graph, add_graph,
         term_names[idx] = term
 
     # Create output directory if needed
-    output_dir = os.path.dirname(output_baseline)
     if output_dir and not os.path.exists(output_dir):
-        os.makedirs(output_dir)
+        os.makedirs(output_dir, exist_ok=True)
     
     # Open output file
     open_func = gzip.open if output_baseline.endswith('.gz') else open
