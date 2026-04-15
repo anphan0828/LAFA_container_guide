@@ -1,23 +1,22 @@
 # Docker Container Guide for Protein Function Prediction Methods
 
-This guide explains how to dockerize a protein function prediction method to participate in LAFA: Longitudinal Assessment of Functional Annotation. A protein function prediction method on LAFA predicts Gene Ontology (GO) terms for provided protein IDs and protein sequences, similar to CAFA competition. The prediction task will be repeated every time there is a new ground truth (released every two months by UniProt).
+This guide explains how to dockerize a protein function prediction method to participate in LAFA: Longitudinal Assessment of Function Annotation. A protein function prediction method on LAFA predicts Gene Ontology (GO) terms for provided protein IDs and protein sequences, similar to CAFA competition. The prediction task will be repeated every time there is a new ground truth (released every two months by UniProt).
 
-**Docker Basics**: Docker container is a way to package your entire application (code, dependencies, environment) into a portable container that runs consistently anywhere. This ensures your method can run seamlessly on LAFA's infrastructure.
+**Docker Basics**: Docker container is a way to package your entire application (code, dependencies, environment) into a portable container that runs consistently anywhere. This ensures your method can run seamlessly on LAFA's infrastructure. Apptainer/Singularity containers are also accepted, but the detailed guide here is based on Docker containers.
 
-We'll use our **ProtT5 container** (`prott5_container/` in this repository) as a concrete example throughout this guide to illustrate best practices.
+We'll use our **ProtT5 container** (`baselines/prott5_container/` in this repository) as a concrete example throughout this guide to illustrate best practices.
 
 ## Container Requirements
 
 ### 1. Input Requirements
-- **Required**: Protein sequences in FASTA format and/or protein IDs
-- **Provided** (more details can be found in the [Data Storage on HuggingFace](#data-storage-on-huggingface) section):
+- **Required input**: Protein sequences in FASTA format and/or protein IDs
+- **Other provided data** (more details can be found in the [Data Storage on HuggingFace](#data-storage-on-huggingface) section):
   -   Training protein sequences (FASTA format)
   -   Test protein sequences (FASTA format)
   -   GO graph structure (OBO format)
   -   Training labels/terms (TSV format, 3 columns `EntryID`, `term`, `aspect`)
   -   Training taxonomy (TSV format no header, 2 columns `EntryID`,`TaxonID`)
   -   Raw GOA file containing all annotations (GAF format, gzipped)
-  -   BLAST hits (TSV format, 6 columns `qseqid`, `sseqid`, `evalue`, `length`, `pident`, `nident`). BLAST self-hits are included.
   -   AlphaFoldDB structures (PDB format, stored in TAR archives)
 - **Optional**: Additional parameters via command-line arguments (e.g., GO evidence code configuration)
 
@@ -88,7 +87,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy application files
 COPY method_main.py .
-COPY [other_files] .
+COPY <other_files> .
 
 # (if applicable) Make bash scripts executable 
 # RUN chmod +x run_method.sh
@@ -167,7 +166,7 @@ if __name__ == '__main__':
 
 ## Data Mounting
 
-Data mounting allows your container to access files on your computer (or LAFA's servers) without copying them into the container. This helps reduce the size of the container image (that will be pushed to Dockerhub). Large data should not be included in the Docker container of your method. If your method needs access to intermediate or external data (e.g., trained model weights, protein embeddings), please contact us.
+Data mounting allows your container to access files on your computer (or on the LAFA server) without copying them into the container. This helps reduce the size of the container image (that will be pushed to Dockerhub). Large data (5GB+) should not be included in the Docker container of your method. If your method needs access to intermediate or external data (e.g., trained model weights, protein embeddings), we will download these data and pass it into your container during run. However, these extra data volumes must be documented clearly to ensure usability for end users.
 
 Docker data mount documentation: https://docs.docker.com/engine/storage/bind-mounts/
 
@@ -249,7 +248,7 @@ docker run --rm \
 
 ### Publishing
 
-You will need a DockerHub account to push your containerized method to DockerHub. After creating an account:
+You will need a DockerHub account to push your container image to DockerHub. After creating an account:
 
 ```bash
 # Tag your container with your DockerHub username
@@ -263,22 +262,25 @@ docker push yourusername/method_name:v1
 # docker push myusername/prott5_predictor:v1
 ```
 
-## Data storage on HuggingFace
-Required data for input are stored in a public repository on HuggingFace. To download this data and use, you can either install HuggingFace Command Line Interface (CLI) [here](https://huggingface.co/docs/huggingface_hub/en/guides/cli#download-a-dataset-or-a-space) or load the data directly into Python.
+We ask that your container image be publicly available on Dockerhub (or other container registries) as well as any other data required for your container to run. A description on Dockerhub must state:
+- Example run command: input and output argument names
+- Location of data storage: where to download, and how to bind these data into your container during run
+- A GitHub repository containing a more detailed description of your method and the scripts used to build the container.
 
+## Data storage on HuggingFace
+Data for each time point of LAFA are stored in a public repository on HuggingFace. To download this data and test your container, you can either install [HuggingFace Command Line Interface (CLI)](https://huggingface.co/docs/huggingface_hub/en/guides/cli#download-a-dataset-or-a-space) or load the data directly into Python. All datasets are listed [here](https://huggingface.co/datasets/anphan0828/lafa/tree/main).
 
 To download the whole dataset using HuggingFace CLI, use:
 ```bash
 hf download anphan0828/lafa --repo-type dataset --local-dir="your_local_dir" 
 ```
-(updated Oct 2025) The public LAFA repository on HuggingFace contains:
+(updated Apr 2026) The public LAFA repository on HuggingFace contains:
 - AlphaFoldDB_v6 folder: PDB files of almost all SwissProt proteins (550,122 PDB files), version 6 (obtained from AlphaFoldDB FTP site). This folder contains 12 gzipped tar archives, each containing 50,000 PDB files. The list of proteins contained in each tar archive can be found in `tarball_proteins.json` file in the same directory. Example file name for protein `A0A009IHW8`: "AF-A0A009IHW8-F1-model_v6.pdb.gz"
-- JunOct folder: all data files collected from UniProt release 2025_03 (released in June 2025) needed for your protein function prediction method. This directory includes:
-  1. GO structure: `go-basic-20250601.obo`
+- Sep_2025 folder: all data files collected from UniProt-GOA (release date 2025-09-04), UniProt (release date 2025-06-18, release number 2025_03), GO graph (release date 2025-07-22) needed for your protein function prediction method. This directory includes:
+  1. GO structure: `go-basic.obo`
   2. Training sequences: `train_sequences.fasta` includes sequences of all experimentally-annotated proteins
   3. Training terms: `train_terms.tsv` includes GO annotations of experimentally annotated proteins
   4. Test sequences: `test_sequences.fasta` includes sequences of all target proteins that we are asking predictions for. For this release, the test set includes every protein in SwissProt.
-  5. BLAST hits: `blast_results.tsv` includes BLAST hits of every sequence in test set against the training set. BLAST format is as follows: `BLAST_FORMAT="6 qseqid sseqid evalue length pident nident"`. Self-hits are included.
-  6. Additional files: `train_taxonomy.tsv` (taxonomy ID for every protein in the training set), `goa_uniprot_sprot.gaf.226.gz` (all GO annotations of SwissProt proteins). 
- 
+  5. Additional files: `train_taxonomy.tsv` (taxonomy ID for every protein in the training set), `goa_uniprot_sprot.gaf.gz` (GO annotations of SwissProt proteins of all evidence codes). 
+- All other data folders (Nov_2025, Dec_2025, etc) contain the same file contents as above, but released on a different date.
 Note that the file names might be standardized in later releases, so input files should be passed into container as command-line arguments instead of hard-coded paths inside your script.
